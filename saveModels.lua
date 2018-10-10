@@ -71,6 +71,7 @@ local SpatialConvolution = nn.SpatialConvolution
 local SpatialFullConvolution = nn.SpatialFullConvolution --去卷积或上采样的操作
 
 local criterion_img = nn.MSECriterion()
+local criterion = nn.BCECriterion()
 
 local input_img_guide = torch.Tensor(opt.batchSize, 3, opt.fineSize, opt.fineSize)
 local input_txt_guide = torch.Tensor(opt.batchSize, opt.txtSize)
@@ -100,25 +101,25 @@ end
 if opt.init_g == '' then
     -- 输入图像+文本：图像64*3*64*64 文本64*1024
 
-    encNet = nn.Sequential()
+    encoder = nn.Sequential()
     -- 64*3*64*64
-    encNet:add(SpatialConvolution(3, 64, 4, 4, 2, 2, 1, 1))
-    encNet:add(SpatialBatchNormalization(64)):add(nn.ReLU(true))
+    encoder:add(SpatialConvolution(3, 64, 4, 4, 2, 2, 1, 1))
+    encoder:add(SpatialBatchNormalization(64)):add(nn.ReLU(true))
     -- 64*64*32*32
-    encNet:add(SpatialConvolution(64, 128, 4, 4, 2, 2, 1, 1))
-    encNet:add(SpatialBatchNormalization(128)):add(nn.ReLU(true))
+    encoder:add(SpatialConvolution(64, 128, 4, 4, 2, 2, 1, 1))
+    encoder:add(SpatialBatchNormalization(128)):add(nn.ReLU(true))
     -- 64*128*16*16
-    encNet:add(SpatialConvolution(128, 256, 4, 4, 2, 2, 1, 1))
-    encNet:add(SpatialBatchNormalization(256)):add(nn.ReLU(true))
+    encoder:add(SpatialConvolution(128, 256, 4, 4, 2, 2, 1, 1))
+    encoder:add(SpatialBatchNormalization(256)):add(nn.ReLU(true))
     -- 64*256*8*8
-    encNet:add(SpatialConvolution(256, 512, 4, 4, 2, 2, 1, 1))
-    encNet:add(SpatialBatchNormalization(512)):add(nn.ReLU(true))
+    encoder:add(SpatialConvolution(256, 512, 4, 4, 2, 2, 1, 1))
+    encoder:add(SpatialBatchNormalization(512)):add(nn.ReLU(true))
     -- 64*512*4*4
-    encNet:add(SpatialConvolution(512, 1024, 4, 4, 2, 2, 1, 1))
-    encNet:add(SpatialBatchNormalization(1024)):add(nn.ReLU(true))
+    encoder:add(SpatialConvolution(512, 1024, 4, 4, 2, 2, 1, 1))
+    encoder:add(SpatialBatchNormalization(1024)):add(nn.ReLU(true))
     -- 64*1024*2*2
-    encNet:add(SpatialConvolution(1024, 1024, 4, 4, 2, 2, 1, 1))
-    encNet:add(SpatialBatchNormalization(1024)):add(nn.ReLU(true))
+    encoder:add(SpatialConvolution(1024, 1024, 4, 4, 2, 2, 1, 1))
+    encoder:add(SpatialBatchNormalization(1024)):add(nn.ReLU(true))
     -- 64*1024*1*1
 
     netR = nn.Sequential()
@@ -130,35 +131,36 @@ if opt.init_g == '' then
     netR:add(nn.Reshape(opt.batchSize, opt.txtSize))
     -- 64*1024*1*1
 
-    paraNet = nn.ParallelTable()
-    paraNet:add(encNet)
-    paraNet:add(netR)
+    --paraNet = nn.ParallelTable()
+    --paraNet:add(encoder)
+    --paraNet:add(netR)
 
-    decNet = nn.Sequential()
+    decoder = nn.Sequential()
     --64*2048*1*1
-    decNet:add(SpatialFullConvolution(2048, 1024, 4, 4, 2, 2, 1, 1))
-    decNet:add(SpatialBatchNormalization(1024)):add(nn.ReLU(true))
+    decoder:add(SpatialFullConvolution(1024, 1024, 4, 4, 2, 2, 1, 1))
+    decoder:add(SpatialBatchNormalization(1024)):add(nn.ReLU(true))
     --64*1024*2*2
-    decNet:add(SpatialFullConvolution(1024, 512, 4, 4, 2, 2, 1, 1))
-    decNet:add(SpatialBatchNormalization(512)):add(nn.ReLU(true))
+    decoder:add(SpatialFullConvolution(1024, 512, 4, 4, 2, 2, 1, 1))
+    decoder:add(SpatialBatchNormalization(512)):add(nn.ReLU(true))
     --64*512*4*4
-    decNet:add(SpatialFullConvolution(512, 256, 4, 4, 2, 2, 1, 1))
-    decNet:add(SpatialBatchNormalization(256)):add(nn.ReLU(true))
+    decoder:add(SpatialFullConvolution(512, 256, 4, 4, 2, 2, 1, 1))
+    decoder:add(SpatialBatchNormalization(256)):add(nn.ReLU(true))
     --64*256*8*8
-    decNet:add(SpatialFullConvolution(256, 128, 4, 4, 2, 2, 1, 1))
-    decNet:add(SpatialBatchNormalization(128)):add(nn.ReLU(true))
+    decoder:add(SpatialFullConvolution(256, 128, 4, 4, 2, 2, 1, 1))
+    decoder:add(SpatialBatchNormalization(128)):add(nn.ReLU(true))
     --64*128*16*16
-    decNet:add(SpatialFullConvolution(128, 64, 4, 4, 2, 2, 1, 1))
-    decNet:add(SpatialBatchNormalization(64)):add(nn.ReLU(true))
+    decoder:add(SpatialFullConvolution(128, 64, 4, 4, 2, 2, 1, 1))
+    decoder:add(SpatialBatchNormalization(64)):add(nn.ReLU(true))
     --64*64*32*32
-    decNet:add(SpatialFullConvolution(64, 3, 4, 4, 2, 2, 1, 1))
-    decNet:add(SpatialBatchNormalization(3)):add(nn.ReLU(true))
+    decoder:add(SpatialFullConvolution(64, 3, 4, 4, 2, 2, 1, 1))
+    decoder:add(SpatialBatchNormalization(3)):add(nn.ReLU(true))
     --64*3*64*64
 
     netG = nn.Sequential()
-    netG:add(paraNet)
-    netG:add(nn.JoinTable(2))
-    netG:add(decNet)
+    --netG:add(paraNet)
+    --netG:add(nn.JoinTable(1))
+    netG:add(encoder)
+    netG:add(decoder)
 
     netG:apply(weights_init)
 else
@@ -171,6 +173,7 @@ if opt.gpu > 0 then
     outputImage = outputImage:cuda()
     netG = netG:cuda()
     criterion_img = criterion_img:cuda()
+    criterion = criterion:cuda()
 end
 
 local parametersG, gradParametersG = netG:getParameters()
@@ -187,12 +190,12 @@ local preNetG = function(x)
     input_txt_guide:copy(real_txt)
     --print(input_img_guide:size()) --64*3*64*64
     --print(input_txt_guide:size()) --64*1024
-    local fake = netG:forward{input_img_guide, input_txt_guide}
+    local fake = netG:forward(input_img_guide)
     outputImage:copy(fake)
 
     errG = criterion_img:forward(input_img_guide, outputImage)
     local gradient = criterion_img:backward(input_img_guide, outputImage)
-    netG:backward({input_img_guide, input_txt_guide}, gradient)
+    netG:backward(input_img_guide, gradient)
     --netG:updateParameters(opt.lr)
     return errG, gradParametersG
 end
