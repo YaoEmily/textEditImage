@@ -79,7 +79,12 @@ local data = DataLoader.new(opt.nThreads, opt.dataset, opt)
 print("Dataset: " .. opt.dataset, " Size: ", data:size())
 
 input_x = torch.Tensor(64, 3, 64, 64)
+input_txt_raw = torch.Tensor(64, 1024)
+input_txt = torch.Tensor(64, 1024)
+
 input_x = input_x:cuda()
+input_txt_raw = input_txt_raw:cuda()
+input_txt = input_txt:cuda()
 
 function getFilenames()
     queue = {}
@@ -156,20 +161,61 @@ encoder = VAE.get_encoder(channels, naf, z_dim)
 sampler = VAE.get_sampler()
 decoder = VAE.get_decoder(channels, ngf, z_dim)
 
+--64*3*64*64
+tmpNet1 = nn.Sequential()
+tmpNet1:add(encoder)
+tmpNet1:add(sampler)
+--64*100*1*1
+
+--64*1024
+tmpNet2 = nn.Sequential()
+tmpNet2:add(nn.Linear(opt.txtSize,opt.nt))
+tmpNet2:add(nn.LeakyReLU(0.2,true))
+tmpNet2:add(nn.View(64, opt.nt, 1, 1))
+--64*100*1*1
+
+parallelNet = nn.ParallelTable()
+parallelNet:add(tmpNet1)
+parallelNet:add(tmpNet2)
+
 netG = nn.Sequential()
-netG:add(encoder)
-netG:add(sampler)
+netG:add(parallelNet)
+netG:add(nn.JoinTable(2))
+
+--[[
+netG:add(nn.SpatialFullConvolution(228, 100, 4, 4, 2, 2, 1, 1))
+netG:add(nn.SpatialBatchNormalization(100)):add(nn.ReLU())
+netG:add(nn.SpatialFullConvolution(100, 100, 4, 4, 2, 2, 1, 1))
+netG:add(nn.SpatialBatchNormalization(100)):add(nn.ReLU())
+--]]
+netG:add(nn.SpatialConvolution(228, 100, 3, 3, 1, 1, 1, 1))
+netG:add(nn.SpatialBatchNormalization(100)):add(nn.ReLU())
 netG:add(decoder)
 netG:apply(weights_init)
 
 netD = discriminator.get_discriminator(channels, ndf)
 netD:apply(weights_init)
 
-print(netG)
+netR = nn.Sequential()
+if opt.replicate == 1 then
+  netR:add(nn.Reshape(opt.batchSize / opt.numCaption, opt.numCaption, opt.txtSize))
+  netR:add(nn.Transpose({1,2}))
+  netR:add(nn.Mean(1))
+  netR:add(nn.Replicate(opt.numCaption))
+  netR:add(nn.Transpose({1,2}))
+  netR:add(nn.Reshape(opt.batchSize, opt.txtSize))
+else
+  netR:add(nn.Reshape(opt.batchSize, opt.numCaption, opt.txtSize))
+  netR:add(nn.Transpose({1,2}))
+  netR:add(nn.Mean(1))
+end
+
+--print(netG)
 --print(netD)
 
 netG = netG:cuda()
 netD = netD:cuda()
+netR = netR:cuda()
 cudnn.convert(netG, cudnn)
 cudnn.convert(netD, cudnn)
 
@@ -258,11 +304,13 @@ fAx = function(x)
     end
     --reconstruction loss
     gradParametersG:zero()
-    output = netG:forward(input_x)
+    emb_txt = netR:forward(input_txt_raw)
+    input_txt:copy(emb_txt)
+    output = netG:forward({input_x, input_txt})
     --print(output:size(), input_x:size())
     errA = m_criterion:forward(output, input_x)
     df_do = m_criterion:backward(output, input_x)
-    netG:backward(input_x, df_do)
+    netG:backward({input_x, input_txt}, df_do)
 
     --KLLoss
     nElements = output:nElement()
@@ -305,8 +353,10 @@ generate = function(epoch)
     image.save(output_folder .. getNumber(epoch) .. '.png', generations[1])
 end
 
-outputExample = function(epoch, input_x)
-    local generations = netG:forward(input_x)
+outputExample = function(epoch, input_x, input_txt_raw)
+    emb_txt = netR:forward(input_txt_raw)
+    input_txt:copy(emb_txt)
+    local generations = netG:forward({input_x, input_txt})
     image.save(output_folder .. 'ori' .. getNumber(epoch) .. '.png', input_x[1])
     image.save(output_folder .. 'exm' .. getNumber(epoch) .. '.png', generations[1])
 end
@@ -322,13 +372,14 @@ for epoch = 1, 50000 do
         local size = math.min(i + batch_size - 1, train_size) - i
         real_img, real_txt, wrong_img, _ = data:getBatch()
         input_x:copy(real_img)
+        input_txt_raw:copy(real_txt)
         tm:reset()
         --optim takes an evaluation function, the parameters of the model you wish to train, and the optimization options, such as learning rate and momentum
         optim.adam(fAx, parametersG, optimStateG)  --VAE
         optim.adam(fDx, parametersD, optimStateD) --discriminator
         optim.adam(fGx, parametersG, optimStateG) --generator
         collectgarbage('collect')
-        outputExample(epoch, input_x)
+        outputExample(epoch, input_x, input_txt_raw)
     end
     reconstruct_count = reconstruct_count + 1
     if errG then
