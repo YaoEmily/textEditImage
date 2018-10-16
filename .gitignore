@@ -39,3 +39,9 @@ luac.out
 *.x86_64
 *.hex
 
+# files
+input/*
+output/*
+checkpoints/*
+models/*
+dataset_cub/*
