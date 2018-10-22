@@ -83,7 +83,6 @@ end
 -- function to load the image, jitter it appropriately (random crops etc.)
 local trainHook = function(path)
   collectgarbage()
-  --print("path =", path)
   local input = loadImage(path) -- 3*76*76
   if opt.no_aug == 1 then
     return image.scale(input, sampleSize[2], sampleSize[2])
@@ -141,17 +140,11 @@ function trainLoader:sample_no_repl(quantity)
   opt.numCaption = 1
   -- print("#trainids =", #trainids) -- 150
   for n = 1, quantity do
-    local cls_ix = torch.randperm(#trainids):narrow(1,1,2) -- 打乱并取前两个
+    local cls_ix = torch.randperm(#trainids):narrow(1,1,2)
     local id1 = trainids[cls_ix[1]]
     local id2 = trainids[cls_ix[2]]
-    -- print("id1 =", id1)
-    -- print("id2 =", id2)
     local file_ix1 = torch.randperm(#files[id1])[1]
     local file_ix2 = torch.randperm(#files[id2])[1]
-    -- print("#files[id1] =", files[id1])
-    -- print("#files[id2] =", files[id2])
-    -- print("file_ix1 =", file_ix1)
-    -- print("file_ix2 =", file_ix2)
     ix_batch1[n] = cls_ix[1]
     ix_batch2[n] = cls_ix[2]
     ix_file1[n] = file_ix1
@@ -167,8 +160,6 @@ function trainLoader:sample_no_repl(quantity)
   for n = 1, quantity do
     local id1 = trainids[ix_batch1[n]] -- real img
     local id2 = trainids[ix_batch2[n]] -- wrong img
-    -- print("id1 =", id1)
-    -- print("id2 =", id2)
 
     ids[n] = id1
     local cls1_files = files[id1] -- real img
@@ -176,13 +167,9 @@ function trainLoader:sample_no_repl(quantity)
 
     local t7file1 = cls1_files[ix_file1[n]] -- real img
     local t7file2 = cls2_files[ix_file2[n]] -- wrong img
-    -- print("t7file1 =", t7file1)
-    -- print("t7file2 =", t7file2)
 
     local info1 = torch.load(t7file1) -- real img
     local info2 = torch.load(t7file2) -- wrong img
-    -- print("info1 =", info1)
-    -- print("info2 =", info2)
 
     local img_file1 = opt.img_dir .. '/' .. info1.img
     local img1 = trainHook(img_file1) -- real img
@@ -197,8 +184,6 @@ function trainLoader:sample_no_repl(quantity)
 
     data_img1[n]:copy(img1) -- real img
     data_img2[n]:copy(img2) -- wrong img
-    -- print("data_img1:size() =", data_img1:size())
-    -- print("data_img2:size() =", data_img2:size())
   end
   collectgarbage(); collectgarbage()
   return data_img1, data_txt1, data_img2, ids

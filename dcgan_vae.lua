@@ -171,7 +171,7 @@ tmpNet1:add(sampler)
 tmpNet2 = nn.Sequential()
 tmpNet2:add(nn.Linear(opt.txtSize,opt.nt))
 tmpNet2:add(nn.LeakyReLU(0.2,true))
-tmpNet2:add(nn.View(64, opt.nt, 1, 1))
+tmpNet2:add(nn.View(-1, opt.nt, 1, 1))
 --64*100*1*1
 
 parallelNet = nn.ParallelTable()
@@ -248,7 +248,7 @@ label = label:cuda()
 real_label = 1
 fake_label = 0
 
-dNoise = .1
+dNoise = .01
 
 epoch_tm = torch.Timer()
 tm = torch.Timer()
@@ -276,7 +276,7 @@ fDx = function(x)
     -- train with real
     label:fill(real_label)
     --slightly noise inputs to help stabilize GAN and allow for convergence
-    input_x = nn.WhiteNoise(0, dNoise):cuda():forward(input_x)
+    --input_x = nn.WhiteNoise(0, dNoise):cuda():forward(input_x)
     output = netD:forward(input_x)
     errD_real = criterion:forward(output, label)
     df_do = criterion:backward(output, label)
@@ -389,15 +389,14 @@ for epoch = 1, 50000 do
     parametersD, gradParametersD = nil, nil
     parametersG, gradParametersG = nil, nil
     --save and/or clear model state for next training batch
-    if epoch % 1000 == 0 then
-        torch.save(checkpoints .. epoch .. '_net_G.t7', netG:clearState())
-        torch.save(checkpoints .. epoch .. '_net_D.t7', netD:clearState())
+    if epoch % 100 == 0 then
+        torch.save(checkpoints .. 'VAE_' .. epoch .. '_net_G.t7', netG:clearState())
+        torch.save(checkpoints .. 'VAE_' .. epoch .. '_net_D.t7', netD:clearState())
     else
         netG:clearState()
         netD:clearState()
     end
     generate(epoch)
-    real_img, real_txt, wrong_img, _ = data:getBatch()
     parametersD, gradParametersD = netD:getParameters()
     parametersG, gradParametersG = netG:getParameters()
     --simulated annealing for the discriminator's noise parameter
