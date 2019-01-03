@@ -83,7 +83,6 @@ end
 
 function data._pushResult(...)
   local res = {...}
-  --print("res =", res)
   if res == nil then
     self.threads:synchronize()
   end
@@ -97,7 +96,6 @@ function data:getImages()
 
   local res = result[1]
   result[1] = nil
-  --print("res =", res)
   if torch.type(res) == 'table' then
     --print("unpack(res).shape =", unpack(res).shape)
     return unpack(res)
@@ -108,12 +106,10 @@ end
 function data:getBatch()
   -- queue another job
   self.threads:addjob(self._getFromThreads, self._pushResult)
-  -- print("lalala")
   self.threads:dojob()
 
   local res = result[1]
   result[1] = nil
-  --print("res =", res)
   if torch.type(res) == 'table' then
     --print("unpack(res).shape =", unpack(res):size())
     return unpack(res)

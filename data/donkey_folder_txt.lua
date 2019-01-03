@@ -222,6 +222,7 @@ function trainLoader:sample_repl(quantity)
   local data_img1 = torch.Tensor(quantity, sampleSize[1], sampleSize[2], sampleSize[2]) -- real
   local data_img2 = torch.Tensor(quantity, sampleSize[1], sampleSize[2], sampleSize[2]) -- wrong
   local data_txt1 = torch.zeros(quantity, opt.txtSize) -- real
+  local data_txt2 = torch.zeros(quantity, opt.txtSize) -- wrong
   local ids = torch.zeros(quantity)
 
   for n = 1, quantity do
@@ -241,14 +242,17 @@ function trainLoader:sample_repl(quantity)
     local img_file2 = opt.img_dir .. '/' .. info2.img
     local img2 = trainHook(img_file2)
     local ix_txt1 = torch.randperm(info1.txt:size(1))[1]
+    local ix_txt2 = torch.randperm(info2.txt:size(1))[1]
 
     local txt1 = info1.txt[ix_txt1]
+    local txt2 = info2.txt[ix_txt2]
     data_txt1[n]:copy(txt1)
+    data_txt2[n]:copy(txt2)
     data_img1[n]:copy(img1)
     data_img2[n]:copy(img2)
   end
   collectgarbage(); collectgarbage()
-  return data_img1, data_txt1, data_img2, ids
+  return data_img1, data_txt1, data_img2, data_txt2
 end
 
 function trainLoader:size()
