@@ -99,10 +99,16 @@ local trainHook = function(path)
   local out = image.crop(input, w1, h1, w1 + oW, h1 + oH) -- 3*64*64 cut image
   assert(out:size(2) == oW)
   assert(out:size(3) == oH)
+
+  return out
+
+  --[[
   -- do hflip with probability 0.5
   if torch.uniform() > 0.5 then out = image.hflip(out); end
   out:mul(2):add(-1) -- make it [0, 1] -> [-1, 1]
+
   return out
+  --]]
 end
 
 
