@@ -135,7 +135,6 @@ local input_img = torch.Tensor(opt.batchSize, 3, opt.fineSize, opt.fineSize)
 local input_img_real = torch.Tensor(opt.batchSize, 3, opt.fineSize, opt.fineSize)
 local input_img_wrong = torch.Tensor(opt.batchSize, 3, opt.fineSize, opt.fineSize)
 local input_img_interp = torch.Tensor(opt.batchSize * 3/2, 3, opt.fineSize, opt.fineSize)
-local input_img_fake_interp = torch.Tensor(opt.batchSize * 3/2, 3, opt.fineSize, opt.fineSize)
 if opt.replicate == 1 then
   input_txt_real_raw = torch.Tensor(opt.batchSize, opt.txtSize)
   input_txt_wrong_raw = torch.Tensor(opt.batchSize, opt.txtSize)
@@ -201,10 +200,6 @@ local fDx = function(x)
   -- train with real
   data_tm:reset(); data_tm:resume()
   real_img, real_txt, wrong_img, wrong_txt = data:getBatch()
-  --print(real_img:size())
-  --print(real_txt:size())
-  --print(wrong_img:size())
-  --print(wrong_txt:size())
   data_tm:stop()
 
   input_img:copy(real_img)
@@ -214,9 +209,9 @@ local fDx = function(x)
   input_txt_wrong_raw:copy(wrong_txt)
 
   -- average adjacent text features in batch dimension.
-  emb_txt = netR:forward(input_txt_real_raw)
+  emb_txt_real = netR:forward(input_txt_real_raw)
   input_txt_real:copy(emb_txt)
-  emb_txt = netR:forward(input_txt_wrong_raw)
+  emb_txt_wrong = netR:forward(input_txt_wrong_raw)
   input_txt_wrong:copy(emb_txt)
 
   if opt.interp_type == 1 then
@@ -262,18 +257,17 @@ local fDx = function(x)
   errD_wrong = 0
   if opt.cls_weight > 0 then
     -- train with wrong
-    input_img:copy(wrong_img)
     label:fill(fake_label)
 
-    local output = netD:forward({input_img, input_txt_real})
+    local output = netD:forward({input_img_wrong, input_txt_real})
     errD_wrong = opt.cls_weight*criterion:forward(output, label)
     local df_do = criterion:backward(output, label)
     df_do:mul(opt.cls_weight)
-    netD:backward({input_img, input_txt_real}, df_do)
+    netD:backward({input_img_wrong, input_txt_real}, df_do)
   end
 
   -- train with fake
-  local fake = netG:forward({input_img, input_txt_real}) -- wrong image + real text
+  local fake = netG:forward({input_img_wrong, input_txt_real}) -- wrong image + real text
   input_img:copy(fake)
   label:fill(fake_label)
 
@@ -283,7 +277,7 @@ local fDx = function(x)
   local fake_weight = 1 - opt.cls_weight
   errD_fake = errD_fake*fake_weight
   df_do:mul(fake_weight)
-  netD:backward(({input_img, input_txt_real}), df_do)
+  netD:backward(({input_img, input_txt_real}), df_do * 0.01)
 
   errD = errD_real + errD_fake + errD_wrong
   errW = errD_wrong
@@ -306,7 +300,6 @@ local fGx = function(x)
     noise_interp:normal(0, 1)
   end
   local fake = netG:forward{input_img_interp, input_txt_interp}
-  input_img_fake_interp:copy(fake)
   input_img_interp:copy(fake)
   label_interp:fill(real_label) -- fake labels are real for generator cost
 
