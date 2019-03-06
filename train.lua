@@ -193,7 +193,7 @@ if opt.display then disp = require 'display' end
 
 local fDx = function(x)
   netD:apply(function(m) if torch.type(m):find('Convolution') then m.bias:zero() end end)
-  --netG:apply(function(m) if torch.type(m):find('Convolution') then print(m) m.bias:zero() end end)
+  --netG:apply(function(m) if torch.type(m):find('Convolution') then m.bias:zero() end end)
 
   gradParametersD:zero()
 
@@ -210,9 +210,9 @@ local fDx = function(x)
 
   -- average adjacent text features in batch dimension.
   emb_txt_real = netR:forward(input_txt_real_raw)
-  input_txt_real:copy(emb_txt)
+  input_txt_real:copy(emb_txt_real)
   emb_txt_wrong = netR:forward(input_txt_wrong_raw)
-  input_txt_wrong:copy(emb_txt)
+  input_txt_wrong:copy(emb_txt_wrong)
 
   if opt.interp_type == 1 then
     -- compute (a + b)/2
@@ -317,6 +317,7 @@ end
 local fCx = function(x)
   netD:apply(function(m) if torch.type(m):find('Convolution') then m.bias:zero() end end)
   --netG:apply(function(m) if torch.type(m):find('Convolution') then m.bias:zero() end end)
+
   gradParametersG:zero()
 
   local fake = netG:forward{input_img_wrong, input_txt_real}
@@ -350,7 +351,7 @@ for epoch = 1, opt.niter do
     -- (2) Update G network: maximize log(D(G(z)))
     optim.adam(fGx, parametersG, optimStateG)
 
-    --optim.adam(fCx, parametersG, optimStateG)
+    optim.adam(fCx, parametersG, optimStateG)
 
     -- logging
     if ((i-1) / opt.batchSize) % opt.print_every == 0 then
