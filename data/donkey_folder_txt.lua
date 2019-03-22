@@ -82,6 +82,7 @@ end
 
 -- function to load the image, jitter it appropriately (random crops etc.)
 local trainHook = function(path)
+  --print(path)
   collectgarbage()
   local input = loadImage(path) -- 3*76*76
   if opt.no_aug == 1 then
@@ -118,6 +119,8 @@ end
 function trainLoader:sample(quantity)
   -- quantity = 64
   if opt.replicate == 1 then
+
+    --return self:getTest(quantity)
     return self:sample_repl(quantity)
   else
     return self:sample_no_repl(quantity)
@@ -196,7 +199,22 @@ function trainLoader:sample_no_repl(quantity)
 end
 
 
+function trainLoader:getTest(quantity)
+  local data_img = torch.Tensor(quantity, sampleSize[1], sampleSize[2], sampleSize[2])
 
+  testImages = "/home/xhy/code/textEditImage/dataset_cub/CUB_200_2011/test_img.txt"
+  tmp = 1
+  for line in io.lines(testImages) do
+    for i = 1, 4 do
+      local image = trainHook(string.sub(line, 1, string.len(line)-1))
+      data_img[tmp]:copy(image)
+      tmp = tmp + 1
+    end
+  end
+
+  collectgarbage(); collectgarbage()
+  return data_img
+end
 
 
 function trainLoader:sample_repl(quantity)
@@ -257,10 +275,32 @@ function trainLoader:sample_repl(quantity)
     data_img1[n]:copy(img1)
     data_img2[n]:copy(img2)
   end
+
   collectgarbage(); collectgarbage()
   return data_img1, data_txt1, data_img2, data_txt2
 end
 
 function trainLoader:size()
   return size
+end
+
+function printTableLen(t)
+  local leng=0
+  for k, v in pairs(t) do
+    leng=leng+1
+  end
+  return leng
+end
+
+function printTableAttr(t)
+  --[[
+  print("char, ", t.char:size()) --201*10
+  print(type(t.img)) --string
+  print("word, ", t.word:size()) --30*10
+  print("txt, ", t.txt:size()) --10*1024
+  --]]
+  for k, v in pairs(t) do
+    print(k) --char img word txt
+    --print(v:size())
+  end
 end
