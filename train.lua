@@ -12,7 +12,6 @@ opt = {
    print_every = 1,
    dataset = 'cub',       -- imagenet / lsun / folder
    no_aug = 0,
-   img_dir = '',
    keep_img_frac = 1.0,
    interp_weight = 0,
    interp_type = 1,
@@ -49,11 +48,13 @@ opt = {
 
    init_g = '',
    init_d = '',
+   net_txt = '/home/xhy/code/textEditImage/dataset_cub/lm_sje_nc4_cub_hybrid_gru18_a1_c512_0.00070_1_10_trainvalids.txt_iter30000.t7',
 }
 
 -- one-line argument parser. parses enviroment variables to override the defaults
 for k,v in pairs(opt) do opt[k] = tonumber(os.getenv(k)) or os.getenv(k) or opt[k] end
 print(opt)
+
 if opt.display == 0 then opt.display = false end
 
 if opt.gpu > 0 then
@@ -73,6 +74,11 @@ torch.setdefaulttensortype('torch.FloatTensor')
 local DataLoader = paths.dofile('data/data.lua')
 local data = DataLoader.new(opt.nThreads, opt.dataset, opt)
 print("Dataset: " .. opt.dataset, " Size: ", data:size())
+
+net_txt = torch.load(opt.net_txt)
+if net_txt.protos ~=nil then net_txt = net_txt.protos.enc_doc end
+net_txt:evaluate()
+
 ----------------------------------------------------------------------------
 local function weights_init(m)
    local name = torch.type(m)
@@ -98,6 +104,7 @@ netD = torch.load(opt.init_d)
 --print(netG)
 --print(netD)
 
+--[[
 netR = nn.Sequential()
 if opt.replicate == 1 then
   netR:add(nn.Reshape(opt.batchSize / opt.numCaption, opt.numCaption, opt.txtSize))
@@ -111,6 +118,7 @@ else
   netR:add(nn.Transpose({1,2}))
   netR:add(nn.Mean(1))
 end
+--]]
 
 local criterion = nn.BCECriterion()
 local absCriterion = nn.AbsCriterion()
@@ -136,8 +144,8 @@ local input_img_real = torch.Tensor(opt.batchSize, 3, opt.fineSize, opt.fineSize
 local input_img_wrong = torch.Tensor(opt.batchSize, 3, opt.fineSize, opt.fineSize)
 local input_img_interp = torch.Tensor(opt.batchSize * 3/2, 3, opt.fineSize, opt.fineSize)
 if opt.replicate == 1 then
-  input_txt_real_raw = torch.Tensor(opt.batchSize, opt.txtSize)
-  input_txt_wrong_raw = torch.Tensor(opt.batchSize, opt.txtSize)
+  input_txt_real_raw = torch.Tensor(opt.batchSize, opt.doc_length, #alphabet)
+  input_txt_wrong_raw = torch.Tensor(opt.batchSize, opt.doc_length, #alphabet)
 else
   input_txt_real_raw = torch.Tensor(opt.batchSize * opt.numCaption, opt.txtSize)
   input_txt_wrong_raw = torch.Tensor(opt.batchSize * opt.numCaption, opt.txtSize)
@@ -170,7 +178,8 @@ if opt.gpu > 0 then
    label_interp = label_interp:cuda()
    netD:cuda()
    netG:cuda()
-   netR:cuda()
+   --netR:cuda()
+   net_txt:cuda()
    criterion:cuda()
    absCriterion:cuda()
    mseCriterion:cuda()
@@ -181,7 +190,8 @@ if opt.use_cudnn == 1 then
   cudnn = require('cudnn')
   netD = cudnn.convert(netD, cudnn)
   netG = cudnn.convert(netG, cudnn)
-  netR = cudnn.convert(netR, cudnn)
+  --netR = cudnn.convert(netR, cudnn)
+  net_txt = cudnn.convert(net_txt, cudnn)
 end
 
 local parametersD, gradParametersD = netD:getParameters()
@@ -209,9 +219,9 @@ local fDx = function(x)
   input_txt_wrong_raw:copy(wrong_txt)
 
   -- average adjacent text features in batch dimension.
-  emb_txt_real = netR:forward(input_txt_real_raw)
+  emb_txt_real = net_txt:forward(input_txt_real_raw)
   input_txt_real:copy(emb_txt_real)
-  emb_txt_wrong = netR:forward(input_txt_wrong_raw)
+  emb_txt_wrong = net_txt:forward(input_txt_wrong_raw)
   input_txt_wrong:copy(emb_txt_wrong)
 
   if opt.interp_type == 1 then

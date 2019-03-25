@@ -25,6 +25,18 @@ function decode(txt)
   return str
 end
 
+function encode(str)
+  local txt = torch.zeros(1,opt.doc_length,#alphabet)
+  for t = 1,opt.doc_length do
+    local ch = str:sub(t,t)
+    local ix = dict[ch]
+    if ix ~= 0 and ix ~= nil then
+      txt[{1,t,ix}] = 1
+    end
+  end
+  return txt --1*201*70
+end
+
 function trainLoader:decode2(txt)
   local str = ''
   _, ch_ixs = txt:max(2)
@@ -247,6 +259,8 @@ function trainLoader:sample_repl(quantity)
   local data_img2 = torch.Tensor(quantity, sampleSize[1], sampleSize[2], sampleSize[2]) -- wrong
   local data_txt1 = torch.zeros(quantity, opt.txtSize) -- real
   local data_txt2 = torch.zeros(quantity, opt.txtSize) -- wrong
+  local data_txt1_70 = torch.zeros(quantity, opt.doc_length, #alphabet)
+  local data_txt2_70 = torch.zeros(quantity, opt.doc_length, #alphabet)
   local ids = torch.zeros(quantity)
 
   for n = 1, quantity do
@@ -270,14 +284,22 @@ function trainLoader:sample_repl(quantity)
 
     local txt1 = info1.txt[ix_txt1]
     local txt2 = info2.txt[ix_txt2]
+
+    local txt1_70 = encode(decode(info1.char:transpose(1, 2)[ix_txt1])) --1*201*70
+    local txt2_70 = encode(decode(info2.char:transpose(1, 2)[ix_txt2]))
+
     data_txt1[n]:copy(txt1)
     data_txt2[n]:copy(txt2)
     data_img1[n]:copy(img1)
     data_img2[n]:copy(img2)
+
+    data_txt1_70[n]:copy(txt1_70)
+    data_txt2_70[n]:copy(txt2_70)
   end
 
   collectgarbage(); collectgarbage()
-  return data_img1, data_txt1, data_img2, data_txt2
+  --return data_img1, data_txt1, data_img2, data_txt2
+  return data_img1, data_txt1_70, data_img2, data_txt2_70
 end
 
 function trainLoader:size()
@@ -299,8 +321,11 @@ function printTableAttr(t)
   print("word, ", t.word:size()) --30*10
   print("txt, ", t.txt:size()) --10*1024
   --]]
+  print(decode(t.char:transpose(1, 2)[1]))
+  --[[
   for k, v in pairs(t) do
     print(k) --char img word txt
     --print(v:size())
   end
+  --]]
 end
