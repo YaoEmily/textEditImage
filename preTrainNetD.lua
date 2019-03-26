@@ -3,6 +3,8 @@ require 'nn'
 require 'nngraph'
 require 'optim'
 
+local alphabet = "abcdefghijklmnopqrstuvwxyz0123456789-,;.!?:'\"/\\|_@#$%^&*~`+-=<>()[]{} "
+
 opt = {
     gpu = 1,
     init_g = '',
@@ -17,10 +19,11 @@ opt = {
     fineSize = 64,
     loadSize = 76,
     batchSize = 64,
+    doc_length = 201,
     numCaption = 4,
     nThreads = 4,           -- #  of data loading threads to use
     dataset = 'cub',       -- imagenet / lsun / folder
-    save_every = 10,
+    save_every = 2,
     lr = 0.0001,            -- initial learning rate for adam
     lr_decay = 0.5,            -- initial learning rate for adam
     decay_every = 100,
@@ -32,16 +35,18 @@ opt = {
     replicate = 1,
     display = 1,            -- display samples while training. 0 = false
     display_id = 10,        -- display window id.
-    name = 'experiment_long',
+    name = 'TAI',
 
     interp_type = 1,
     cls_weight = 0.5,
 
-    data_root = '/home/xhy/code/icml2016/dataset_cub/cub_icml',
-    classnames = '/home/xhy/code/icml2016/dataset_cub/cub_icml/allclasses.txt',
-    trainids = '/home/xhy/code/icml2016/dataset_cub/cub_icml/trainvalids.txt',
-    img_dir = '/home/xhy/code/icml2016/dataset_cub/CUB_200_2011/images',
-    checkpoint_dir = '/home/xhy/code/icml2016/checkpoints',
+    data_root = '/home/xhy/code/textEditImage/dataset_cub/cub_icml',
+    classnames = '/home/xhy/code/textEditImage/dataset_cub/cub_icml/allclasses.txt',
+    trainids = '/home/xhy/code/textEditImage/dataset_cub/cub_icml/trainvalids.txt',
+    img_dir = '/home/xhy/code/textEditImage/dataset_cub/CUB_200_2011/images',
+    checkpoint_dir = '/home/xhy/code/textEditImage/checkpoints',
+
+    net_txt = '/home/xhy/code/textEditImage/dataset_cub/lm_sje_nc4_cub_hybrid_gru18_a1_c512_0.00070_1_10_trainvalids.txt_iter30000.t7',
 }
 
 for k,v in pairs(opt) do opt[k] = tonumber(os.getenv(k)) or os.getenv(k) or opt[k] end
@@ -71,6 +76,10 @@ local DataLoader = paths.dofile('data/data.lua')
 local data = DataLoader.new(opt.nThreads, opt.dataset, opt)
 print("Dataset: " .. opt.dataset, " Size: ", data:size())
 
+net_txt = torch.load(opt.net_txt)
+if net_txt.protos ~=nil then net_txt = net_txt.protos.enc_doc end
+net_txt:evaluate()
+
 local SpatialBatchNormalization = nn.SpatialBatchNormalization
 local SpatialConvolution = nn.SpatialConvolution
 local SpatialFullConvolution = nn.SpatialFullConvolution
@@ -82,7 +91,7 @@ criterion.sizeAverage = false
 
 local input_img = torch.Tensor(opt.batchSize, 3, opt.fineSize, opt.fineSize)
 if opt.replicate == 1 then
-  input_txt_raw = torch.Tensor(opt.batchSize, opt.txtSize)
+  input_txt_raw = torch.Tensor(opt.batchSize, opt.doc_length, #alphabet)
 else
   input_txt_raw = torch.Tensor(opt.batchSize * opt.numCaption, opt.txtSize)
 end
@@ -173,20 +182,6 @@ else
     netD = torch.load(opt.init_d)
 end
 
-netR = nn.Sequential()
-if opt.replicate == 1 then
-    netR:add(nn.Reshape(opt.batchSize / opt.numCaption, opt.numCaption, opt.txtSize))
-    netR:add(nn.Transpose({1,2}))
-    netR:add(nn.Mean(1))
-    netR:add(nn.Replicate(opt.numCaption))
-    netR:add(nn.Transpose({1,2}))
-    netR:add(nn.Reshape(opt.batchSize, opt.txtSize))
-else
-    netR:add(nn.Reshape(opt.batchSize, opt.numCaption, opt.txtSize))
-    netR:add(nn.Transpose({1,2}))
-    netR:add(nn.Mean(1))
-end
-
 if opt.gpu > 0 then
     input_img = input_img:cuda()
     input_txt_raw = input_txt_raw:cuda()
@@ -194,7 +189,7 @@ if opt.gpu > 0 then
     input_txt_interp = input_txt_interp:cuda()
     label = label:cuda()
     netD = netD:cuda()
-    netR = netR:cuda()
+    net_txt = net_txt:cuda()
     criterion_img = criterion_img:cuda()
     criterion = criterion:cuda()
 end
@@ -214,7 +209,7 @@ local preNetD = function(x)
     input_img:copy(real_img)
     input_txt_raw:copy(real_txt)
     -- average adjacent text features in batch dimension.
-    emb_txt = netR:forward(input_txt_raw)
+    emb_txt = net_txt:forward(input_txt_raw)
     input_txt:copy(emb_txt)
 
     if opt.interp_type == 1 then
@@ -243,8 +238,8 @@ local preNetD = function(x)
     label:fill(real_label)
 
     local output = netD:forward{input_img, input_txt}
-    print('true:')
-    print(output:narrow(1, 1, 1))
+    --print('true:')
+    --print(output:narrow(1, 1, 1))
     output_real:copy(output)
     local errD_real = criterion:forward(output, label)
     local df_do = criterion:backward(output, label)
@@ -258,8 +253,8 @@ local preNetD = function(x)
         label:fill(fake_label)
 
         local output = netD:forward{input_img, input_txt}
-        print('wrong:')
-        print(output:narrow(1, 1, 1))
+        --print('wrong:')
+        --print(output:narrow(1, 1, 1))
         output_wrong:copy(output)
         errD_wrong = opt.cls_weight*criterion:forward(output, label)
         local df_do = criterion:backward(output, label)
