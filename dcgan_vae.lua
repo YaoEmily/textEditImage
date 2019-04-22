@@ -1,6 +1,7 @@
 require 'image'
 require 'xlua'
 require 'nn'
+require 'nngraph'
 require 'dpnn'
 require 'optim'
 require 'lfs'
@@ -24,9 +25,7 @@ output_folder = args.output
 checkpoints = args.checkpoints
 reconstruct_folder = args.reconstruction
 
---ensure tensors are of correct type
-torch.setdefaulttensortype('torch.FloatTensor')
-torch.setnumthreads(1)
+local alphabet = "abcdefghijklmnopqrstuvwxyz0123456789-,;.!?:'\"/\\|_@#$%^&*~`+-=<>()[]{} "
 
 opt = {
    numCaption = 4,
@@ -64,22 +63,44 @@ opt = {
    ntrain = math.huge,     -- #  of examples per epoch. math.huge for full dataset
    display = 1,            -- display samples while training. 0 = false
    display_id = 10,        -- display window id.
-   gpu = 2,                -- gpu = 0 is CPU mode. gpu=X is GPU mode on GPU X
+   gpu = 1,                -- gpu = 0 is CPU mode. gpu=X is GPU mode on GPU X
    name = 'experiment_long',
    noise = 'normal',       -- uniform / normal
    init_g = '',
    init_d = '',
    use_cudnn = 0,
+   net_txt = '/home/xhy/code/textEditImage/dataset_cub/lm_sje_nc4_cub_hybrid_gru18_a1_c512_0.00070_1_10_trainvalids.txt_iter30000.t7',
 }
 
---加载图像
+for k,v in pairs(opt) do opt[k] = tonumber(os.getenv(k)) or os.getenv(k) or opt[k] end
+print(opt)
+
+if opt.display == 0 then opt.display = false end
+
+if opt.gpu > 0 then
+   ok, cunn = pcall(require, 'cunn')
+   require 'cudnn'
+   ok2, cutorch = pcall(require, 'cutorch')
+   cutorch.setDevice(opt.gpu)
+end
+
+opt.manualSeed = torch.random(1, 10000) -- fix seed
+print("Random Seed: " .. opt.manualSeed)
+torch.manualSeed(opt.manualSeed)
+torch.setnumthreads(1)
+torch.setdefaulttensortype('torch.FloatTensor')
+
 -- create data loader
 local DataLoader = paths.dofile('data/data.lua')
 local data = DataLoader.new(opt.nThreads, opt.dataset, opt)
 print("Dataset: " .. opt.dataset, " Size: ", data:size())
 
+net_txt = torch.load(opt.net_txt)
+if net_txt.protos ~=nil then net_txt = net_txt.protos.enc_doc end
+net_txt:evaluate()
+
 input_x = torch.Tensor(64, 3, 64, 64)
-input_txt_raw = torch.Tensor(64, 1024)
+input_txt_raw = torch.Tensor(64, opt.doc_length, #alphabet)
 input_txt = torch.Tensor(64, 1024)
 
 input_x = input_x:cuda()
@@ -167,6 +188,11 @@ tmpNet1:add(encoder)
 tmpNet1:add(sampler)
 --64*100*1*1
 
+--[[print("encoder")
+print(encoder)
+print("sampler")
+print(sampler)--]]
+
 --64*1024
 tmpNet2 = nn.Sequential()
 tmpNet2:add(nn.Linear(opt.txtSize,opt.nt))
@@ -196,26 +222,12 @@ netG:apply(weights_init)
 netD = discriminator.get_discriminator(channels, ndf)
 netD:apply(weights_init)
 
-netR = nn.Sequential()
-if opt.replicate == 1 then
-  netR:add(nn.Reshape(opt.batchSize / opt.numCaption, opt.numCaption, opt.txtSize))
-  netR:add(nn.Transpose({1,2}))
-  netR:add(nn.Mean(1))
-  netR:add(nn.Replicate(opt.numCaption))
-  netR:add(nn.Transpose({1,2}))
-  netR:add(nn.Reshape(opt.batchSize, opt.txtSize))
-else
-  netR:add(nn.Reshape(opt.batchSize, opt.numCaption, opt.txtSize))
-  netR:add(nn.Transpose({1,2}))
-  netR:add(nn.Mean(1))
-end
-
 --print(netG)
 --print(netD)
 
 netG = netG:cuda()
 netD = netD:cuda()
-netR = netR:cuda()
+net_txt = net_txt:cuda()
 cudnn.convert(netG, cudnn)
 cudnn.convert(netD, cudnn)
 
@@ -304,7 +316,7 @@ fAx = function(x)
     end
     --reconstruction loss
     gradParametersG:zero()
-    emb_txt = netR:forward(input_txt_raw)
+    emb_txt = net_txt:forward(input_txt_raw)
     input_txt:copy(emb_txt)
     output = netG:forward({input_x, input_txt})
     --print(output:size(), input_x:size())
@@ -353,12 +365,12 @@ generate = function(epoch)
     image.save(output_folder .. getNumber(epoch) .. '.png', generations[1])
 end
 
-outputExample = function(epoch, input_x, input_txt_raw)
-    emb_txt = netR:forward(input_txt_raw)
+outputExample = function(epoch, input_tmp, input_txt_raw)
+    emb_txt = net_txt:forward(input_txt_raw)
     input_txt:copy(emb_txt)
-    local generations = netG:forward({input_x, input_txt})
-    image.save(output_folder .. 'ori' .. getNumber(epoch) .. '.png', input_x[1])
-    image.save(output_folder .. 'exm' .. getNumber(epoch) .. '.png', generations[1])
+    local generations = netG:forward({input_tmp, input_txt})
+    image.save(output_folder .. 'ori2_' .. getNumber(epoch) .. '.png', input_tmp[1])
+    image.save(output_folder .. 'exm_' .. getNumber(epoch) .. '.png', generations[1])
 end
 
 require 'optim'
@@ -372,6 +384,7 @@ for epoch = 1, 50000 do
         local size = math.min(i + batch_size - 1, train_size) - i
         real_img, real_txt, wrong_img, _ = data:getBatch()
         input_x:copy(real_img)
+        image.save(output_folder .. 'ori1_' .. getNumber(epoch) .. '.png', input_x[1])
         input_txt_raw:copy(real_txt)
         tm:reset()
         --optim takes an evaluation function, the parameters of the model you wish to train, and the optimization options, such as learning rate and momentum
