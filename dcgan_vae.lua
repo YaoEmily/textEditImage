@@ -95,9 +95,11 @@ local DataLoader = paths.dofile('data/data.lua')
 local data = DataLoader.new(opt.nThreads, opt.dataset, opt)
 print("Dataset: " .. opt.dataset, " Size: ", data:size())
 
+--[[
 net_txt = torch.load(opt.net_txt)
 if net_txt.protos ~=nil then net_txt = net_txt.protos.enc_doc end
 net_txt:evaluate()
+--]]
 
 input_x = torch.Tensor(64, 3, 64, 64)
 input_txt_raw = torch.Tensor(64, opt.doc_length, #alphabet)
@@ -182,40 +184,9 @@ encoder = VAE.get_encoder(channels, naf, z_dim)
 sampler = VAE.get_sampler()
 decoder = VAE.get_decoder(channels, ngf, z_dim)
 
---64*3*64*64
-tmpNet1 = nn.Sequential()
-tmpNet1:add(encoder)
-tmpNet1:add(sampler)
---64*100*1*1
-
---[[print("encoder")
-print(encoder)
-print("sampler")
-print(sampler)--]]
-
---64*1024
-tmpNet2 = nn.Sequential()
-tmpNet2:add(nn.Linear(opt.txtSize,opt.nt))
-tmpNet2:add(nn.LeakyReLU(0.2,true))
-tmpNet2:add(nn.View(-1, opt.nt, 1, 1))
---64*100*1*1
-
-parallelNet = nn.ParallelTable()
-parallelNet:add(tmpNet1)
-parallelNet:add(tmpNet2)
-
 netG = nn.Sequential()
-netG:add(parallelNet)
-netG:add(nn.JoinTable(2))
-
---[[
-netG:add(nn.SpatialFullConvolution(228, 100, 4, 4, 2, 2, 1, 1))
-netG:add(nn.SpatialBatchNormalization(100)):add(nn.ReLU())
-netG:add(nn.SpatialFullConvolution(100, 100, 4, 4, 2, 2, 1, 1))
-netG:add(nn.SpatialBatchNormalization(100)):add(nn.ReLU())
---]]
-netG:add(nn.SpatialConvolution(228, 100, 3, 3, 1, 1, 1, 1))
-netG:add(nn.SpatialBatchNormalization(100)):add(nn.ReLU())
+netG:add(encoder)
+netG:add(sampler)
 netG:add(decoder)
 netG:apply(weights_init)
 
@@ -227,7 +198,7 @@ netD:apply(weights_init)
 
 netG = netG:cuda()
 netD = netD:cuda()
-net_txt = net_txt:cuda()
+--net_txt = net_txt:cuda()
 cudnn.convert(netG, cudnn)
 cudnn.convert(netD, cudnn)
 
@@ -238,12 +209,12 @@ m_criterion = nn.MSECriterion()
 m_criterion = m_criterion:cuda()
 
 optimStateG = {
-   learningRate =  0.0002,
+   learningRate = 0.001,
    beta1 = 0.5
 }
 
 optimStateD = {
-   learningRate = 0.0002,
+   learningRate = 0.001,
    beta1 = 0.5
 }
 
@@ -316,13 +287,11 @@ fAx = function(x)
     end
     --reconstruction loss
     gradParametersG:zero()
-    emb_txt = net_txt:forward(input_txt_raw)
-    input_txt:copy(emb_txt)
-    output = netG:forward({input_x, input_txt})
+    output = netG:forward(input_x)
     --print(output:size(), input_x:size())
     errA = m_criterion:forward(output, input_x)
     df_do = m_criterion:backward(output, input_x)
-    netG:backward({input_x, input_txt}, df_do)
+    netG:backward(input_x, df_do)
 
     --KLLoss
     nElements = output:nElement()
@@ -365,11 +334,9 @@ generate = function(epoch)
     image.save(output_folder .. getNumber(epoch) .. '.png', generations[1])
 end
 
-outputExample = function(epoch, input_tmp, input_txt_raw)
-    emb_txt = net_txt:forward(input_txt_raw)
-    input_txt:copy(emb_txt)
-    local generations = netG:forward({input_tmp, input_txt})
-    image.save(output_folder .. 'ori2_' .. getNumber(epoch) .. '.png', input_tmp[1])
+outputExample = function(epoch, input_tmp)
+    local generations = netG:forward(input_tmp)
+    image.save(output_folder .. 'ori_' .. getNumber(epoch) .. '.png', input_tmp[1])
     image.save(output_folder .. 'exm_' .. getNumber(epoch) .. '.png', generations[1])
 end
 
@@ -384,15 +351,13 @@ for epoch = 1, 50000 do
         local size = math.min(i + batch_size - 1, train_size) - i
         real_img, real_txt, wrong_img, _ = data:getBatch()
         input_x:copy(real_img)
-        image.save(output_folder .. 'ori1_' .. getNumber(epoch) .. '.png', input_x[1])
-        input_txt_raw:copy(real_txt)
         tm:reset()
         --optim takes an evaluation function, the parameters of the model you wish to train, and the optimization options, such as learning rate and momentum
         optim.adam(fAx, parametersG, optimStateG)  --VAE
         optim.adam(fDx, parametersD, optimStateD) --discriminator
         optim.adam(fGx, parametersG, optimStateG) --generator
         collectgarbage('collect')
-        outputExample(epoch, input_x, input_txt_raw)
+        outputExample(epoch, input_x)
     end
     reconstruct_count = reconstruct_count + 1
     if errG then
@@ -402,13 +367,16 @@ for epoch = 1, 50000 do
     parametersD, gradParametersD = nil, nil
     parametersG, gradParametersG = nil, nil
     --save and/or clear model state for next training batch
-    if epoch % 100 == 0 then
+    --if epoch % 100 == 0 then
         torch.save(checkpoints .. 'VAE_' .. epoch .. '_net_G.t7', netG:clearState())
+        torch.save(checkpoints .. 'VAE_' .. epoch .. '_net_G_encoder.t7', encoder:clearState())
+        torch.save(checkpoints .. 'VAE_' .. epoch .. '_net_G_sampler.t7', sampler:clearState())
+        torch.save(checkpoints .. 'VAE_' .. epoch .. '_net_G_decoder.t7', decoder:clearState())
         torch.save(checkpoints .. 'VAE_' .. epoch .. '_net_D.t7', netD:clearState())
-    else
+    --[[else
         netG:clearState()
         netD:clearState()
-    end
+    end--]]
     generate(epoch)
     parametersD, gradParametersD = netD:getParameters()
     parametersG, gradParametersG = netG:getParameters()
