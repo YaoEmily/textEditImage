@@ -143,6 +143,7 @@ local input_img = torch.Tensor(opt.batchSize, 3, opt.fineSize, opt.fineSize)
 local input_img_real = torch.Tensor(opt.batchSize, 3, opt.fineSize, opt.fineSize)
 local input_img_wrong = torch.Tensor(opt.batchSize, 3, opt.fineSize, opt.fineSize)
 local input_img_interp = torch.Tensor(opt.batchSize * 3/2, 3, opt.fineSize, opt.fineSize)
+local input_img_interp_fake = torch.Tensor(opt.batchSize * 3/2, 3, opt.fineSize, opt.fineSize)
 if opt.replicate == 1 then
   input_txt_real_raw = torch.Tensor(opt.batchSize, opt.doc_length, #alphabet)
   input_txt_wrong_raw = torch.Tensor(opt.batchSize, opt.doc_length, #alphabet)
@@ -154,10 +155,9 @@ local input_txt_real = torch.Tensor(opt.batchSize, opt.txtSize)
 local input_txt_wrong = torch.Tensor(opt.batchSize, opt.txtSize)
 local input_txt_interp = torch.zeros(opt.batchSize * 3/2, opt.txtSize)
 local noise = torch.Tensor(opt.batchSize, nz, 1, 1)
-local noise_interp = torch.Tensor(opt.batchSize * 3/2, nz, 1, 1)
 local label = torch.Tensor(opt.batchSize)
 local label_interp = torch.Tensor(opt.batchSize * 3/2)
-local errD, errG, errW, errC
+local errD, errG, errR, errW, errF, errC
 local epoch_tm = torch.Timer()
 local tm = torch.Timer()
 local data_tm = torch.Timer()
@@ -167,13 +167,13 @@ if opt.gpu > 0 then
    input_img_real = input_img_real:cuda()
    input_img_wrong = input_img_wrong:cuda()
    input_img_interp = input_img_interp:cuda()
+   input_img_interp_fake = input_img_interp_fake:cuda()
    input_txt_real = input_txt_real:cuda()
    input_txt_wrong = input_txt_wrong:cuda()
    input_txt_real_raw = input_txt_real_raw:cuda()
    input_txt_wrong_raw = input_txt_wrong_raw:cuda()
    input_txt_interp = input_txt_interp:cuda()
    noise = noise:cuda()
-   noise_interp = noise_interp:cuda()
    label = label:cuda()
    label_interp = label_interp:cuda()
    netD:cuda()
@@ -203,7 +203,7 @@ if opt.display then disp = require 'display' end
 
 local fDx = function(x)
   netD:apply(function(m) if torch.type(m):find('Convolution') then m.bias:zero() end end)
-  --netG:apply(function(m) if torch.type(m):find('Convolution') then m.bias:zero() end end)
+  netG:apply(function(m) if torch.type(m):find('Convolution') and m.bias~=nil then m.bias:zero() end end)
 
   gradParametersD:zero()
 
@@ -287,10 +287,12 @@ local fDx = function(x)
   local fake_weight = 1 - opt.cls_weight
   errD_fake = errD_fake*fake_weight
   df_do:mul(fake_weight)
-  netD:backward(({input_img, input_txt_real}), df_do * 0.01)
+  netD:backward(({input_img, input_txt_real}), df_do)
 
   errD = errD_real + errD_fake + errD_wrong
   errW = errD_wrong
+  errR = errD_real
+  errF = errD_fake
 
   return errD, gradParametersD
 end
@@ -300,24 +302,18 @@ end
 -- create closure to evaluate f(X) and df/dX of generator
 local fGx = function(x)
   netD:apply(function(m) if torch.type(m):find('Convolution') then m.bias:zero() end end)
-  --netG:apply(function(m) if torch.type(m):find('Convolution') then m.bias:zero() end end)
+  netG:apply(function(m) if torch.type(m):find('Convolution') and m.bias~=nil then m.bias:zero() end end)
 
   gradParametersG:zero()
 
-  if opt.noise == 'uniform' then -- regenerate random noise
-    noise_interp:uniform(-1, 1)
-  elseif opt.noise == 'normal' then
-    noise_interp:normal(0, 1)
-  end
   local fake = netG:forward{input_img_interp, input_txt_interp}
-  input_img_interp:copy(fake)
+  input_img_interp_fake:copy(fake)
   label_interp:fill(real_label) -- fake labels are real for generator cost
 
-  local output = netD:forward{input_img_interp, input_txt_interp}
+  local output = netD:forward{input_img_interp_fake, input_txt_interp}
   errG = criterion_interp:forward(output, label_interp)
   local df_do = criterion_interp:backward(output, label_interp)
-  local df_dg = netD:updateGradInput({input_img_interp, input_txt_interp}, df_do)
-
+  local df_dg = netD:updateGradInput({input_img_interp_fake, input_txt_interp}, df_do)
   netG:backward({input_img_interp, input_txt_interp}, df_dg[1])
   return errG, gradParametersG
 end
@@ -347,7 +343,9 @@ end
 -- train
 for epoch = 1, opt.niter do
   epoch_tm:reset()
-
+  if epoch == 1 then
+    torch.save(opt.checkpoint_dir .. '/' .. opt.name .. '_' .. 0 .. '_net_G.t7', netG)
+  end
   if epoch % opt.decay_every == 0 then
     optimStateG.learningRate = optimStateG.learningRate * opt.lr_decay
     optimStateD.learningRate = optimStateD.learningRate * opt.lr_decay
@@ -366,13 +364,14 @@ for epoch = 1, opt.niter do
     -- logging
     if ((i-1) / opt.batchSize) % opt.print_every == 0 then
       print(('[%d][%d/%d] T:%.3f  DT:%.3f lr: %.4g '
-                .. '  Err_G: %.4f  Err_D: %.4f Err_W: %.4f Err_C: %.4f'):format(
+                .. '  Err_G: %.4f  Err_D: %.4f Err_R: %.4f Err_W: %.4f Err_F: %.4f Err_C: %.4f'):format(
               epoch, ((i-1) / opt.batchSize),
               math.floor(math.min(data:size(), opt.ntrain) / opt.batchSize),
               tm:time().real, data_tm:time().real,
               optimStateG.learningRate,
               errG and errG or -1, errD and errD or -1,
-              errW and errW or -1, errC and errC or -1))
+              errR and errR or -1, errW and errW or -1,
+              errF and errF or -1, errC and errC or -1))
       local fake = netG.output
       disp.image(fake:narrow(1,1,opt.batchSize), {win=opt.display_id, title=opt.name})
       disp.image(real_img, {win=opt.display_id * 3, title=opt.name})
