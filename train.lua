@@ -157,7 +157,7 @@ local input_txt_interp = torch.zeros(opt.batchSize * 3/2, opt.txtSize)
 local noise = torch.Tensor(opt.batchSize, nz, 1, 1)
 local label = torch.Tensor(opt.batchSize)
 local label_interp = torch.Tensor(opt.batchSize * 3/2)
-local errD, errG, errR, errW, errF, errC
+local errD, errG, errR, errW, errF, errC, errA
 local epoch_tm = torch.Timer()
 local tm = torch.Timer()
 local data_tm = torch.Timer()
@@ -335,9 +335,20 @@ local fCx = function(x)
   netG:backward({input_img_wrong, input_txt_real}, df_dg[1])
 
   return errC, gradParametersG
-
 end
 
+
+local fAx = function(x)
+  gradParametersG:zero()
+
+  local fake = netG:forward{input_img_real, input_txt_real}
+  input_img:copy(fake)
+  errA = mseCriterion:forward(fake, input_img_real)
+  local df_do = mseCriterion:backward(fake, input_img_real)
+  netG:backward({input_img_real, input_txt_real}, df_do)
+
+  return errA, gradParametersG
+end
 
 
 -- train
@@ -353,25 +364,29 @@ for epoch = 1, opt.niter do
 
   for i = 1, math.min(data:size(), opt.ntrain), opt.batchSize do
     tm:reset()
+
+    optim.adam(fCx, parametersG, optimStateG)
+
+    optim.adam(fAx, parametersG, optimStateG)
+
     -- (1) Update D network: maximize log(D(x)) + log(1 - D(G(z)))
     optim.adam(fDx, parametersD, optimStateD)
 
     -- (2) Update G network: maximize log(D(G(z)))
     optim.adam(fGx, parametersG, optimStateG)
 
-    optim.adam(fCx, parametersG, optimStateG)
-
     -- logging
     if ((i-1) / opt.batchSize) % opt.print_every == 0 then
       print(('[%d][%d/%d] T:%.3f  DT:%.3f lr: %.4g '
-                .. '  Err_G: %.4f  Err_D: %.4f Err_R: %.4f Err_W: %.4f Err_F: %.4f Err_C: %.4f'):format(
+                .. '  Err_G: %.4f  Err_D: %.4f Err_R: %.4f Err_W: %.4f Err_F: %.4f Err_C: %.4f Err_A: %.4f'):format(
               epoch, ((i-1) / opt.batchSize),
               math.floor(math.min(data:size(), opt.ntrain) / opt.batchSize),
               tm:time().real, data_tm:time().real,
               optimStateG.learningRate,
               errG and errG or -1, errD and errD or -1,
               errR and errR or -1, errW and errW or -1,
-              errF and errF or -1, errC and errC or -1))
+              errF and errF or -1, errC and errC or -1,
+              errA and errA or -1))
       local fake = netG.output
       disp.image(fake:narrow(1,1,opt.batchSize), {win=opt.display_id, title=opt.name})
       disp.image(real_img, {win=opt.display_id * 3, title=opt.name})
