@@ -23,13 +23,13 @@ opt = {
     numCaption = 4,
     nThreads = 4,           -- #  of data loading threads to use
     dataset = 'cub',       -- imagenet / lsun / folder
-    save_every = 2,
-    lr = 0.0001,            -- initial learning rate for adam
+    save_every = 10,
+    lr = 0.0002,            -- initial learning rate for adam
     lr_decay = 0.5,            -- initial learning rate for adam
     decay_every = 100,
     beta1 = 0.5,            -- momentum term of adam
     ntrain = math.huge,     -- #  of examples per epoch. math.huge for full dataset
-    niter = 300,             -- #  of iter at starting learning rate
+    niter = 500,             -- #  of iter at starting learning rate
     print_every = 4,
     nThreads = 4,
     replicate = 1,
@@ -84,8 +84,6 @@ local SpatialBatchNormalization = nn.SpatialBatchNormalization
 local SpatialConvolution = nn.SpatialConvolution
 local SpatialFullConvolution = nn.SpatialFullConvolution
 
-local criterion_img = nn.MSECriterion()
-criterion_img.sizeAverage = true
 local criterion = nn.BCECriterion()
 criterion.sizeAverage = false
 
@@ -96,13 +94,9 @@ else
   input_txt_raw = torch.Tensor(opt.batchSize * opt.numCaption, opt.txtSize)
 end
 local input_txt = torch.Tensor(opt.batchSize, opt.txtSize)
-local input_txt_interp = torch.zeros(opt.batchSize * 3/2, opt.txtSize)
 local label = torch.Tensor(opt.batchSize)
 
-local output_real = torch.Tensor(1, 64)
-local output_wrong = torch.Tensor(1, 64)
-
-local errD, errG, errW
+local errD, errR, errW
 local epoch_tm = torch.Timer()
 local tm = torch.Timer()
 local data_tm = torch.Timer()
@@ -186,11 +180,9 @@ if opt.gpu > 0 then
     input_img = input_img:cuda()
     input_txt_raw = input_txt_raw:cuda()
     input_txt = input_txt:cuda()
-    input_txt_interp = input_txt_interp:cuda()
     label = label:cuda()
     netD = netD:cuda()
     net_txt = net_txt:cuda()
-    criterion_img = criterion_img:cuda()
     criterion = criterion:cuda()
 end
 
@@ -198,64 +190,35 @@ local parametersD, gradParametersD = netD:getParameters()
 
 local preNetD = function(x)
     netD:apply(function(m) if torch.type(m):find('Convolution') then m.bias:zero() end end)
-
     gradParametersD:zero()
 
-    -- train with real
     data_tm:reset(); data_tm:resume()
     real_img, real_txt, wrong_img, _ = data:getBatch()
     data_tm:stop()
 
-    input_img:copy(real_img)
     input_txt_raw:copy(real_txt)
     -- average adjacent text features in batch dimension.
     emb_txt = net_txt:forward(input_txt_raw)
     input_txt:copy(emb_txt)
 
-    if opt.interp_type == 1 then
-        -- compute (a + b)/2
-        input_txt_interp:narrow(1,1,opt.batchSize):copy(input_txt)
-        input_txt_interp:narrow(1,opt.batchSize+1,opt.batchSize/2):copy(input_txt:narrow(1,1,opt.batchSize/2))
-        input_txt_interp:narrow(1,opt.batchSize+1,opt.batchSize/2):add(input_txt:narrow(1,opt.batchSize/2+1,opt.batchSize/2))
-        input_txt_interp:narrow(1,opt.batchSize+1,opt.batchSize/2):mul(0.5)
-    elseif opt.interp_type == 2 then
-        -- compute (a + b)/2
-        input_txt_interp:narrow(1,1,opt.batchSize):copy(input_txt)
-        input_txt_interp:narrow(1,opt.batchSize+1,opt.batchSize/2):copy(input_txt:narrow(1,1,opt.batchSize/2))
-        input_txt_interp:narrow(1,opt.batchSize+1,opt.batchSize/2):add(input_txt:narrow(1,opt.batchSize/2+1,opt.batchSize/2))
-        input_txt_interp:narrow(1,opt.batchSize+1,opt.batchSize/2):mul(0.5)
+    -- train with real
 
-        -- add extrapolation vector.
-        local alpha = torch.rand(opt.batchSize/2,1):mul(2):add(-1) -- alpha ~ uniform(-1,1)
-        if opt.gpu >=0 then
-            alpha = alpha:float():cuda()
-        end
-        alpha = torch.expand(alpha,opt.batchSize/2,input_txt_interp:size(2))
-        local vec = (input_txt:narrow(1,opt.batchSize/2+1,opt.batchSize/2) -
-            input_txt:narrow(1,1,opt.batchSize/2)):cmul(alpha)
-        input_txt_interp:narrow(1,opt.batchSize+1,opt.batchSize/2):add(vec)
-    end
+    input_img:copy(real_img)
     label:fill(real_label)
 
     local output = netD:forward{input_img, input_txt}
-    --print('true:')
-    --print(output:narrow(1, 1, 1))
-    output_real:copy(output)
     local errD_real = criterion:forward(output, label)
     local df_do = criterion:backward(output, label)
     netD:backward({input_img, input_txt}, df_do)
+    errR = errD_real
 
     -- train with wrong
     errD_wrong = 0
     if opt.cls_weight > 0 then
-        -- train with wrong
         input_img:copy(wrong_img)
         label:fill(fake_label)
 
         local output = netD:forward{input_img, input_txt}
-        --print('wrong:')
-        --print(output:narrow(1, 1, 1))
-        output_wrong:copy(output)
         errD_wrong = opt.cls_weight*criterion:forward(output, label)
         local df_do = criterion:backward(output, label)
         df_do:mul(opt.cls_weight)
@@ -284,14 +247,15 @@ for epoch = 1, opt.niter do
         -- logging
         if ((i-1) / opt.batchSize) % opt.print_every == 0 then
             print(('[%d][%d/%d] T:%.3f  DT:%.3f lr: %.4g '
-                .. '  Err_D: %.4f'):format(
+                .. '  Err_D: %.4f Err_R: %.4f Err_W: %.4f'):format(
                 epoch,
                 ((i-1) / opt.batchSize),
                 math.floor(math.min(data:size(), opt.ntrain) / opt.batchSize),
                 tm:time().real,
                 data_tm:time().real,
                 optimStateD.learningRate,
-                errD and errD or -1))
+                errD and errD or -1, errR and errR or -1,
+                errW and errW or -1))
             --print(fake:size()) -- 64*1
             --disp.image(fake:narrow(1,1,opt.batchSize), {win=opt.display_id, title=opt.name})
             --disp.image(real_img, {win=opt.display_id * 3, title=opt.name})
