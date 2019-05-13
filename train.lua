@@ -13,8 +13,6 @@ opt = {
    dataset = 'cub',       -- imagenet / lsun / folder
    no_aug = 0,
    keep_img_frac = 1.0,
-   interp_weight = 0,
-   interp_type = 1,
    cls_weight = 0.5,
    filenames = '',
    data_root = '/home/xhy/code/textEditImage/dataset_cub/cub_icml',
@@ -104,29 +102,9 @@ netD = torch.load(opt.init_d)
 --print(netG)
 --print(netD)
 
---[[
-netR = nn.Sequential()
-if opt.replicate == 1 then
-  netR:add(nn.Reshape(opt.batchSize / opt.numCaption, opt.numCaption, opt.txtSize))
-  netR:add(nn.Transpose({1,2}))
-  netR:add(nn.Mean(1))
-  netR:add(nn.Replicate(opt.numCaption))
-  netR:add(nn.Transpose({1,2}))
-  netR:add(nn.Reshape(opt.batchSize, opt.txtSize))
-else
-  netR:add(nn.Reshape(opt.batchSize, opt.numCaption, opt.txtSize))
-  netR:add(nn.Transpose({1,2}))
-  netR:add(nn.Mean(1))
-end
---]]
-
 local criterion = nn.BCECriterion()
 local absCriterion = nn.AbsCriterion()
 local mseCriterion = nn.MSECriterion()
-local weights = torch.zeros(opt.batchSize * 3/2)
-weights:narrow(1,1,opt.batchSize):fill(1)
-weights:narrow(1,opt.batchSize+1,opt.batchSize/2):fill(opt.interp_weight)
-local criterion_interp = nn.BCECriterion(weights)
 
 optimStateG = {
    learningRate = opt.lr,
@@ -142,8 +120,6 @@ alphabet_size = #alphabet
 local input_img = torch.Tensor(opt.batchSize, 3, opt.fineSize, opt.fineSize)
 local input_img_real = torch.Tensor(opt.batchSize, 3, opt.fineSize, opt.fineSize)
 local input_img_wrong = torch.Tensor(opt.batchSize, 3, opt.fineSize, opt.fineSize)
-local input_img_interp = torch.Tensor(opt.batchSize * 3/2, 3, opt.fineSize, opt.fineSize)
-local input_img_interp_fake = torch.Tensor(opt.batchSize * 3/2, 3, opt.fineSize, opt.fineSize)
 if opt.replicate == 1 then
   input_txt_real_raw = torch.Tensor(opt.batchSize, opt.doc_length, #alphabet)
   input_txt_wrong_raw = torch.Tensor(opt.batchSize, opt.doc_length, #alphabet)
@@ -153,11 +129,9 @@ else
 end
 local input_txt_real = torch.Tensor(opt.batchSize, opt.txtSize)
 local input_txt_wrong = torch.Tensor(opt.batchSize, opt.txtSize)
-local input_txt_interp = torch.zeros(opt.batchSize * 3/2, opt.txtSize)
 local noise = torch.Tensor(opt.batchSize, nz, 1, 1)
 local label = torch.Tensor(opt.batchSize)
-local label_interp = torch.Tensor(opt.batchSize * 3/2)
-local errD, errG, errR, errW, errF, errC, errA
+local errD, errG, errR, errW, errF, errA, errRec, errAdapt
 local epoch_tm = torch.Timer()
 local tm = torch.Timer()
 local data_tm = torch.Timer()
@@ -166,16 +140,12 @@ if opt.gpu > 0 then
    input_img = input_img:cuda()
    input_img_real = input_img_real:cuda()
    input_img_wrong = input_img_wrong:cuda()
-   input_img_interp = input_img_interp:cuda()
-   input_img_interp_fake = input_img_interp_fake:cuda()
    input_txt_real = input_txt_real:cuda()
    input_txt_wrong = input_txt_wrong:cuda()
    input_txt_real_raw = input_txt_real_raw:cuda()
    input_txt_wrong_raw = input_txt_wrong_raw:cuda()
-   input_txt_interp = input_txt_interp:cuda()
    noise = noise:cuda()
    label = label:cuda()
-   label_interp = label_interp:cuda()
    netD:cuda()
    netG:cuda()
    --netR:cuda()
@@ -183,7 +153,6 @@ if opt.gpu > 0 then
    criterion:cuda()
    absCriterion:cuda()
    mseCriterion:cuda()
-   criterion_interp:cuda()
 end
 
 if opt.use_cudnn == 1 then
@@ -224,38 +193,6 @@ local fDx = function(x)
   emb_txt_wrong = net_txt:forward(input_txt_wrong_raw)
   input_txt_wrong:copy(emb_txt_wrong)
 
-  if opt.interp_type == 1 then
-    -- compute (a + b)/2
-    input_txt_interp:narrow(1,1,opt.batchSize):copy(input_txt_real)
-    input_txt_interp:narrow(1,opt.batchSize+1,opt.batchSize/2):copy(input_txt_real:narrow(1,1,opt.batchSize/2))
-    input_txt_interp:narrow(1,opt.batchSize+1,opt.batchSize/2):add(input_txt_real:narrow(1,opt.batchSize/2+1,opt.batchSize/2))
-    input_txt_interp:narrow(1,opt.batchSize+1,opt.batchSize/2):mul(0.5)
-  elseif opt.interp_type == 2 then
-    -- compute (a + b)/2
-    input_txt_interp:narrow(1,1,opt.batchSize):copy(input_txt_real)
-    input_txt_interp:narrow(1,opt.batchSize+1,opt.batchSize/2):copy(input_txt_real:narrow(1,1,opt.batchSize/2))
-    input_txt_interp:narrow(1,opt.batchSize+1,opt.batchSize/2):add(input_txt_real:narrow(1,opt.batchSize/2+1,opt.batchSize/2))
-    input_txt_interp:narrow(1,opt.batchSize+1,opt.batchSize/2):mul(0.5)
-
-    -- add extrapolation vector.
-    local alpha = torch.rand(opt.batchSize/2,1):mul(2):add(-1) -- alpha ~ uniform(-1,1)
-    if opt.gpu >=0 then
-     alpha = alpha:float():cuda()
-    end
-    alpha = torch.expand(alpha,opt.batchSize/2,input_txt_interp:size(2))
-    local vec = (input_txt_real:narrow(1,opt.batchSize/2+1,opt.batchSize/2) -
-                input_txt_real:narrow(1,1,opt.batchSize/2)):cmul(alpha)
-    input_txt_interp:narrow(1,opt.batchSize+1,opt.batchSize/2):add(vec)
-  end
-
-  if opt.interp_type == 1 then
-    -- compute (a + b)/2
-    input_img_interp:narrow(1,1,opt.batchSize):copy(input_img)
-    input_img_interp:narrow(1,opt.batchSize+1,opt.batchSize/2):copy(input_img:narrow(1,1,opt.batchSize/2))
-    input_img_interp:narrow(1,opt.batchSize+1,opt.batchSize/2):add(input_img:narrow(1,opt.batchSize/2+1,opt.batchSize/2))
-    input_img_interp:narrow(1,opt.batchSize+1,opt.batchSize/2):mul(0.5)
-  end
-
   label:fill(real_label)
 
   local output = netD:forward{input_img, input_txt_real}
@@ -277,7 +214,7 @@ local fDx = function(x)
   end
 
   -- train with fake
-  local fake = netG:forward({input_img_wrong, input_txt_real}) -- wrong image + real text
+  local fake = netG:forward{input_img_wrong, input_txt_real} -- wrong image + real text
   input_img:copy(fake)
   label:fill(fake_label)
 
@@ -306,35 +243,29 @@ local fGx = function(x)
 
   gradParametersG:zero()
 
-  local fake = netG:forward{input_img_interp, input_txt_interp}
-  input_img_interp_fake:copy(fake)
-  label_interp:fill(real_label) -- fake labels are real for generator cost
+  -- GAN loss
+  label:fill(real_label)
+  local fake = netG:forward({input_img_wrong, input_txt_real})
+  local output = netD:forward({fake, input_txt_real})
+  errG = criterion:forward(output, label)
+  local df_do1 = criterion:backward(output, label)
+  local df_d_GAN = netD:updateGradInput({fake, input_txt_real}, df_do1)
 
-  local output = netD:forward{input_img_interp_fake, input_txt_interp}
-  errG = criterion_interp:forward(output, label_interp)
-  local df_do = criterion_interp:backward(output, label_interp)
-  local df_dg = netD:updateGradInput({input_img_interp_fake, input_txt_interp}, df_do)
-  netG:backward({input_img_interp, input_txt_interp}, df_dg[1])
+  -- forward cycle loss
+  local rec = netG:forward({fake, input_txt_wrong})
+  errRec = mseCriterion:forward(rec, input_img_wrong)
+  local df_do2 = mseCriterion:backward(rec, input_img_wrong)
+  local df_do_rec = netG:updateGradInput({fake, input_txt_wrong}, df_do2)
+  netG:backward({input_img_wrong, input_txt_real}, df_d_GAN[1] + df_do_rec[1])
+
+  -- backward cycle loss
+  local fake2 = netG:forward({input_img_real, input_txt_wrong})
+  local rec2 = netG:forward({fake2, input_txt_real})
+  errAdapt = mseCriterion:forward(rec2, input_img_real)
+  local df_do_coadapt = mseCriterion:backward(rec2, input_img_real)
+  netG:backward({fake2, input_txt_real}, df_do_coadapt)
+
   return errG, gradParametersG
-end
-
-
-
-local fCx = function(x)
-  netD:apply(function(m) if torch.type(m):find('Convolution') then m.bias:zero() end end)
-  --netG:apply(function(m) if torch.type(m):find('Convolution') then m.bias:zero() end end)
-
-  gradParametersG:zero()
-
-  local fake = netG:forward{input_img_wrong, input_txt_real}
-  input_img:copy(fake)
-  local fake2 = netG:forward{input_img, input_txt_wrong}
-  errC = mseCriterion:forward(fake2, input_img_wrong)
-  local df_do = mseCriterion:backward(fake2, input_img_wrong)
-  local df_dg = netG:updateGradInput({input_img, input_txt_wrong}, df_do)
-  netG:backward({input_img_wrong, input_txt_real}, df_dg[1])
-
-  return errC, gradParametersG
 end
 
 
@@ -365,27 +296,26 @@ for epoch = 1, opt.niter do
   for i = 1, math.min(data:size(), opt.ntrain), opt.batchSize do
     tm:reset()
 
-    optim.adam(fCx, parametersG, optimStateG)
-
-    optim.adam(fAx, parametersG, optimStateG)
-
     -- (1) Update D network: maximize log(D(x)) + log(1 - D(G(z)))
     optim.adam(fDx, parametersD, optimStateD)
 
     -- (2) Update G network: maximize log(D(G(z)))
     optim.adam(fGx, parametersG, optimStateG)
 
+    optim.adam(fAx, parametersG, optimStateG)
+
     -- logging
     if ((i-1) / opt.batchSize) % opt.print_every == 0 then
       print(('[%d][%d/%d] T:%.3f  DT:%.3f lr: %.4g '
-                .. '  Err_G: %.4f  Err_D: %.4f Err_R: %.4f Err_W: %.4f Err_F: %.4f Err_C: %.4f Err_A: %.4f'):format(
+                .. '  Err_G: %.4f Err_Rec: %.4f Err_Adapt: %.4f Err_D: %.4f Err_R: %.4f Err_W: %.4f Err_F: %.4f Err_A: %.4f'):format(
               epoch, ((i-1) / opt.batchSize),
               math.floor(math.min(data:size(), opt.ntrain) / opt.batchSize),
               tm:time().real, data_tm:time().real,
               optimStateG.learningRate,
-              errG and errG or -1, errD and errD or -1,
-              errR and errR or -1, errW and errW or -1,
-              errF and errF or -1, errC and errC or -1,
+              errG and errG or -1, errRec and errRec or -1,
+              errAdapt and errAdapt or -1,
+              errD and errD or -1, errR and errR or -1,
+              errW and errW or -1, errF and errF or -1,
               errA and errA or -1))
       local fake = netG.output
       disp.image(fake:narrow(1,1,opt.batchSize), {win=opt.display_id, title=opt.name})
