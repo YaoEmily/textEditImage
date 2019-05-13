@@ -13,7 +13,6 @@ opt = {
    dataset = 'cub',       -- imagenet / lsun / folder
    no_aug = 0,
    keep_img_frac = 1.0,
-   cls_weight = 0.5,
    filenames = '',
    data_root = '/home/xhy/code/textEditImage/dataset_cub/cub_icml',
    classnames = '/home/xhy/code/textEditImage/dataset_cub/cub_icml/allclasses.txt',
@@ -131,7 +130,7 @@ local input_txt_real = torch.Tensor(opt.batchSize, opt.txtSize)
 local input_txt_wrong = torch.Tensor(opt.batchSize, opt.txtSize)
 local noise = torch.Tensor(opt.batchSize, nz, 1, 1)
 local label = torch.Tensor(opt.batchSize)
-local errD, errG, errR, errW, errF, errA, errRec, errAdapt
+local errD, errG, errR, errW,  errA, errRec, errAdapt
 local epoch_tm = torch.Timer()
 local tm = torch.Timer()
 local data_tm = torch.Timer()
@@ -148,7 +147,6 @@ if opt.gpu > 0 then
    label = label:cuda()
    netD:cuda()
    netG:cuda()
-   --netR:cuda()
    net_txt:cuda()
    criterion:cuda()
    absCriterion:cuda()
@@ -159,7 +157,6 @@ if opt.use_cudnn == 1 then
   cudnn = require('cudnn')
   netD = cudnn.convert(netD, cudnn)
   netG = cudnn.convert(netG, cudnn)
-  --netR = cudnn.convert(netR, cudnn)
   net_txt = cudnn.convert(net_txt, cudnn)
 end
 
@@ -176,7 +173,6 @@ local fDx = function(x)
 
   gradParametersD:zero()
 
-  -- train with real
   data_tm:reset(); data_tm:resume()
   real_img, real_txt, wrong_img, wrong_txt = data:getBatch()
   data_tm:stop()
@@ -193,8 +189,8 @@ local fDx = function(x)
   emb_txt_wrong = net_txt:forward(input_txt_wrong_raw)
   input_txt_wrong:copy(emb_txt_wrong)
 
+  -- train with real
   label:fill(real_label)
-
   local output = netD:forward{input_img, input_txt_real}
   local errD_real = criterion:forward(output, label)
   local df_do = criterion:backward(output, label)
@@ -202,34 +198,15 @@ local fDx = function(x)
 
   -- train with wrong
   errD_wrong = 0
-  if opt.cls_weight > 0 then
-    -- train with wrong
-    label:fill(fake_label)
-
-    local output = netD:forward({input_img_wrong, input_txt_real})
-    errD_wrong = opt.cls_weight*criterion:forward(output, label)
-    local df_do = criterion:backward(output, label)
-    df_do:mul(opt.cls_weight)
-    netD:backward({input_img_wrong, input_txt_real}, df_do)
-  end
-
-  -- train with fake
-  local fake = netG:forward{input_img_wrong, input_txt_real} -- wrong image + real text
-  input_img:copy(fake)
   label:fill(fake_label)
-
-  local output = netD:forward({input_img, input_txt_real})
-  local errD_fake = criterion:forward(output, label)
+  local output = netD:forward({input_img_wrong, input_txt_real})
+  errD_wrong = criterion:forward(output, label)
   local df_do = criterion:backward(output, label)
-  local fake_weight = 1 - opt.cls_weight
-  errD_fake = errD_fake*fake_weight
-  df_do:mul(fake_weight)
-  netD:backward(({input_img, input_txt_real}), df_do)
+  netD:backward({input_img_wrong, input_txt_real}, df_do)
 
-  errD = errD_real + errD_fake + errD_wrong
-  errW = errD_wrong
+  errD = errD_real + errD_wrong
   errR = errD_real
-  errF = errD_fake
+  errW = errD_wrong
 
   return errD, gradParametersD
 end
@@ -307,7 +284,7 @@ for epoch = 1, opt.niter do
     -- logging
     if ((i-1) / opt.batchSize) % opt.print_every == 0 then
       print(('[%d][%d/%d] T:%.3f  DT:%.3f lr: %.4g '
-                .. '  Err_G: %.4f Err_Rec: %.4f Err_Adapt: %.4f Err_D: %.4f Err_R: %.4f Err_W: %.4f Err_F: %.4f Err_A: %.4f'):format(
+                .. '  Err_G: %.4f Err_Rec: %.4f Err_Adapt: %.4f Err_D: %.4f Err_R: %.4f Err_W: %.4f Err_A: %.4f'):format(
               epoch, ((i-1) / opt.batchSize),
               math.floor(math.min(data:size(), opt.ntrain) / opt.batchSize),
               tm:time().real, data_tm:time().real,
@@ -315,7 +292,7 @@ for epoch = 1, opt.niter do
               errG and errG or -1, errRec and errRec or -1,
               errAdapt and errAdapt or -1,
               errD and errD or -1, errR and errR or -1,
-              errW and errW or -1, errF and errF or -1,
+              errW and errW or -1,
               errA and errA or -1))
       local fake = netG.output
       disp.image(fake:narrow(1,1,opt.batchSize), {win=opt.display_id, title=opt.name})
