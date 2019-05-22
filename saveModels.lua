@@ -10,13 +10,13 @@ opt = {
     init_r = '',
 
     txtSize = 1024,         -- #  of dim for raw text.
-    nt = 128,               -- #  of dim for text features.
+    nt = 256,               -- #  of dim for text features.
     nz = 10,               -- #  of dim for Z
-    ngf = 128,              -- #  of gen filters in first conv layer
+    ngf = 64,              -- #  of gen filters in first conv layer
     ndf = 64,               -- #  of discrim filters in first conv layer
     fineSize = 64,
     loadSize = 76,
-    batchSize = 64,
+    batchSize = 128,
     numCaption = 4,
     nThreads = 4,           -- #  of data loading threads to use
     dataset = 'cub',       -- imagenet / lsun / folder
@@ -34,11 +34,11 @@ opt = {
     display_id = 10,        -- display window id.
     name = 'experiment_long',
 
-    data_root = '/home/xhy/code/icml2016/dataset_cub/cub_icml',
-    classnames = '/home/xhy/code/icml2016/dataset_cub/cub_icml/allclasses.txt',
-    trainids = '/home/xhy/code/icml2016/dataset_cub/cub_icml/trainvalids.txt',
-    img_dir = '/home/xhy/code/icml2016/dataset_cub/CUB_200_2011/images',
-    checkpoint_dir = '/home/xhy/code/icml2016/checkpoints',
+    data_root = '/home/xhy/code/textEditImage/dataset_cub/cub_icml',
+    classnames = '/home/xhy/code/textEditImage/dataset_cub/cub_icml/allclasses.txt',
+    trainids = '/home/xhy/code/textEditImage/dataset_cub/cub_icml/trainvalids.txt',
+    img_dir = '/home/xhy/code/textEditImage/dataset_cub/CUB_200_2011/images',
+    checkpoint_dir = '/home/xhy/code/textEditImage/checkpoints',
 }
 
 for k,v in pairs(opt) do opt[k] = tonumber(os.getenv(k)) or os.getenv(k) or opt[k] end
@@ -55,8 +55,8 @@ local nt = opt.nt
 local nz = opt.nz
 local ngf = opt.ngf
 local ndf = opt.ndf
-local nc = 3
 
+--[[
 opt.manualSeed = torch.random(1, 10000) -- fix seed
 print("Random Seed: " .. opt.manualSeed)
 torch.manualSeed(opt.manualSeed)
@@ -65,6 +65,7 @@ torch.setdefaulttensortype('torch.FloatTensor')
 local DataLoader = paths.dofile('data/data.lua')
 local data = DataLoader.new(opt.nThreads, opt.dataset, opt)
 print("Dataset: " .. opt.dataset, " Size: ", data:size())
+--]]
 
 local SpatialBatchNormalization = nn.SpatialBatchNormalization
 local SpatialConvolution = nn.SpatialConvolution
@@ -98,8 +99,42 @@ local function weights_init(m)
    end
 end
 
+local function build_conv_block(dim, padding_type)
+  local conv_block = nn.Sequential()
+  local p = 0
+  if padding_type == 'reflect' then
+    conv_block:add(nn.SpatialReflectionPadding(1, 1, 1, 1))
+  elseif padding_type == 'replicate' then
+    conv_block:add(nn.SpatialReplicationPadding(1, 1, 1, 1))
+  elseif padding_type == 'zero' then
+    p = 1
+  end
+  conv_block:add(nn.SpatialConvolution(dim, dim, 3, 3, 1, 1, p, p))
+  conv_block:add(SpatialBatchNormalization(dim))
+  conv_block:add(nn.ReLU(true))
+  if padding_type == 'reflect' then
+    conv_block:add(nn.SpatialReflectionPadding(1, 1, 1, 1))
+  elseif padding_type == 'replicate' then
+    conv_block:add(nn.SpatialReplicationPadding(1, 1, 1, 1))
+  end
+  conv_block:add(nn.SpatialConvolution(dim, dim, 3, 3, 1, 1, p, p))
+  conv_block:add(SpatialBatchNormalization(dim))
+  return conv_block
+end
+
+local function build_res_block(dim, padding_type)
+  local conv_block = build_conv_block(dim, padding_type)
+  local res_block = nn.Sequential()
+  local concat = nn.ConcatTable()
+  concat:add(conv_block)
+  concat:add(nn.Identity())
+  res_block:add(concat):add(nn.CAddTable())
+  return res_block
+end
+
 if opt.init_g == '' then
     -- 输入图像+文本：图像64*3*64*64 文本64*1024
+    netG = nn.Sequential()
 
     encoder = nn.Sequential()
     -- 64*3*64*64
@@ -115,51 +150,75 @@ if opt.init_g == '' then
     encoder:add(SpatialConvolution(256, 512, 4, 4, 2, 2, 1, 1))
     encoder:add(SpatialBatchNormalization(512)):add(nn.ReLU(true))
     -- 64*512*4*4
-    encoder:add(SpatialConvolution(512, 1024, 4, 4, 2, 2, 1, 1))
-    encoder:add(SpatialBatchNormalization(1024)):add(nn.ReLU(true))
-    -- 64*1024*2*2
-    encoder:add(SpatialConvolution(1024, 1024, 4, 4, 2, 2, 1, 1))
-    encoder:add(SpatialBatchNormalization(1024)):add(nn.ReLU(true))
-    -- 64*1024*1*1
 
-    netR = nn.Sequential()
-    netR:add(nn.Reshape(opt.batchSize / opt.numCaption, opt.numCaption, opt.txtSize))
-    netR:add(nn.Transpose({1,2}))
-    netR:add(nn.Mean(1))
-    netR:add(nn.Replicate(opt.numCaption))
-    netR:add(nn.Transpose({1,2}))
-    netR:add(nn.Reshape(opt.batchSize, opt.txtSize))
-    -- 64*1024*1*1
+    local conc = nn.ConcatTable()
+    local conv = nn.Sequential()
+    conv:add(SpatialConvolution(ndf * 8, ndf * 4, 1, 1, 1, 1, 0, 0))
+    conv:add(SpatialBatchNormalization(ndf * 4))
+    conv:add(nn.LeakyReLU(0.2, true))
+    conv:add(SpatialConvolution(ndf * 4, ndf * 4, 3, 3, 1, 1, 1, 1))
+    conv:add(SpatialBatchNormalization(ndf * 4))
+    conv:add(nn.LeakyReLU(0.2, true))
+    conv:add(SpatialConvolution(ndf * 4, ndf * 8, 3, 3, 1, 1, 1, 1))
+    conv:add(SpatialBatchNormalization(ndf * 8))
+    conc:add(nn.Identity())
+    conc:add(conv)
+    encoder:add(conc)
+    encoder:add(nn.CAddTable())
+    encoder:add(nn.LeakyReLU(0.2, true))
 
-    --paraNet = nn.ParallelTable()
-    --paraNet:add(encoder)
-    --paraNet:add(netR)
+    encoder_txt = nn.Sequential()
+    encoder_txt:add(nn.Linear(opt.txtSize, opt.nt))
+    encoder_txt:add(nn.BatchNormalization(opt.nt))
+    encoder_txt:add(nn.LeakyReLU(0.2,true))
+    encoder_txt:add(nn.Replicate(4,3))
+    encoder_txt:add(nn.Replicate(4,4))
+
+    ptg = nn.ParallelTable()
+    ptg:add(encoder)
+    ptg:add(encoder_txt)
+
+    netG:add(ptg)
+    netG:add(nn.JoinTable(2))
+    netG:add(SpatialConvolution(512+opt.nt, ngf * 8, 3, 3, 1, 1, 1, 1))
+    netG:add(SpatialBatchNormalization(ngf * 8))
+
+    netG:add(build_res_block(ngf * 8, 'reflect'))
+    netG:add(build_res_block(ngf * 8, 'reflect'))
+    netG:add(build_res_block(ngf * 8, 'reflect'))
+    netG:add(build_res_block(ngf * 8, 'reflect'))
+    netG:add(build_res_block(ngf * 8, 'reflect'))
+    netG:add(build_res_block(ngf * 8, 'reflect'))
+    netG:add(build_res_block(ngf * 8, 'reflect'))
+    netG:add(build_res_block(ngf * 8, 'reflect'))
+    netG:add(build_res_block(ngf * 8, 'reflect'))
+    netG:add(build_res_block(ngf * 8, 'reflect'))
+    netG:add(build_res_block(ngf * 8, 'reflect'))
+    netG:add(build_res_block(ngf * 8, 'reflect'))
 
     decoder = nn.Sequential()
-    --64*2048*1*1
-    decoder:add(SpatialFullConvolution(1024, 1024, 4, 4, 2, 2, 1, 1))
-    decoder:add(SpatialBatchNormalization(1024)):add(nn.ReLU(true))
-    --64*1024*2*2
-    decoder:add(SpatialFullConvolution(1024, 512, 4, 4, 2, 2, 1, 1))
-    decoder:add(SpatialBatchNormalization(512)):add(nn.ReLU(true))
     --64*512*4*4
-    decoder:add(SpatialFullConvolution(512, 256, 4, 4, 2, 2, 1, 1))
+    --decoder:add(SpatialFullConvolution(512, 256, 4, 4, 2, 2, 1, 1))
+    decoder:add(nn.UpSampling(2, 'nearest'))
+    decoder:add(SpatialConvolution(512, 256, 3, 3, 1, 1, 1, 1))
     decoder:add(SpatialBatchNormalization(256)):add(nn.ReLU(true))
     --64*256*8*8
-    decoder:add(SpatialFullConvolution(256, 128, 4, 4, 2, 2, 1, 1))
+    --decoder:add(SpatialFullConvolution(256, 128, 4, 4, 2, 2, 1, 1))
+    decoder:add(nn.UpSampling(2, 'nearest'))
+    decoder:add(SpatialConvolution(256, 128, 3, 3, 1, 1, 1, 1))
     decoder:add(SpatialBatchNormalization(128)):add(nn.ReLU(true))
     --64*128*16*16
-    decoder:add(SpatialFullConvolution(128, 64, 4, 4, 2, 2, 1, 1))
+    --decoder:add(SpatialFullConvolution(128, 64, 4, 4, 2, 2, 1, 1))
+    decoder:add(nn.UpSampling(2, 'nearest'))
+    decoder:add(SpatialConvolution(128, 64, 3, 3, 1, 1, 1, 1))
     decoder:add(SpatialBatchNormalization(64)):add(nn.ReLU(true))
     --64*64*32*32
-    decoder:add(SpatialFullConvolution(64, 3, 4, 4, 2, 2, 1, 1))
-    decoder:add(SpatialBatchNormalization(3)):add(nn.ReLU(true))
+    --decoder:add(SpatialFullConvolution(64, 3, 4, 4, 2, 2, 1, 1))
+    decoder:add(nn.UpSampling(2, 'nearest'))
+    decoder:add(SpatialConvolution(64, 3, 3, 3, 1, 1, 1, 1))
+    decoder:add(nn.Tanh())
     --64*3*64*64
 
-    netG = nn.Sequential()
-    --netG:add(paraNet)
-    --netG:add(nn.JoinTable(1))
-    netG:add(encoder)
     netG:add(decoder)
 
     netG:apply(weights_init)
@@ -178,6 +237,12 @@ end
 
 local parametersG, gradParametersG = netG:getParameters()
 
+print(netG)
+torch.save('./checkpoints_cub_upsample/netG.t7', netG)
+-- netG = torch.load('./models/netG.t7');
+-- print(netG)
+
+--[[
 local preNetG = function(x)
     netG:apply(function(m) if torch.type(m):find('Convolution') then m.bias:zero() end end)
     gradParametersG:zero()
@@ -199,10 +264,6 @@ local preNetG = function(x)
     --netG:updateParameters(opt.lr)
     return errG, gradParametersG
 end
-
--- torch.save('./models/netG.t7', netG)
--- netG = torch.load('./models/netG.t7');
--- print(netG)
 
 -- train
 for epoch = 1, opt.niter do
@@ -246,3 +307,4 @@ for epoch = 1, opt.niter do
           epoch, opt.niter, epoch_tm:time().real))
       end
 end
+--]]
