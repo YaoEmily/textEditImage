@@ -10,7 +10,7 @@ opt = {
     init_r = '',
 
     txtSize = 1024,         -- #  of dim for raw text.
-    nt = 256,               -- #  of dim for text features.
+    nt = 128,               -- #  of dim for text features.
     nz = 10,               -- #  of dim for Z
     ngf = 64,              -- #  of gen filters in first conv layer
     ndf = 64,               -- #  of discrim filters in first conv layer
@@ -134,6 +134,7 @@ end
 
 if opt.init_g == '' then
     -- 输入图像+文本：图像64*3*64*64 文本64*1024
+
     netG = nn.Sequential()
 
     encoder = nn.Sequential()
@@ -183,39 +184,31 @@ if opt.init_g == '' then
     netG:add(SpatialConvolution(512+opt.nt, ngf * 8, 3, 3, 1, 1, 1, 1))
     netG:add(SpatialBatchNormalization(ngf * 8))
 
-    netG:add(build_res_block(ngf * 8, 'reflect'))
-    netG:add(build_res_block(ngf * 8, 'reflect'))
-    netG:add(build_res_block(ngf * 8, 'reflect'))
-    netG:add(build_res_block(ngf * 8, 'reflect'))
-    netG:add(build_res_block(ngf * 8, 'reflect'))
-    netG:add(build_res_block(ngf * 8, 'reflect'))
-    netG:add(build_res_block(ngf * 8, 'reflect'))
-    netG:add(build_res_block(ngf * 8, 'reflect'))
-    netG:add(build_res_block(ngf * 8, 'reflect'))
-    netG:add(build_res_block(ngf * 8, 'reflect'))
-    netG:add(build_res_block(ngf * 8, 'reflect'))
-    netG:add(build_res_block(ngf * 8, 'reflect'))
+    netG:add(build_res_block(ngf * 8, 'reflect')):add(build_res_block(ngf * 8, 'reflect')):add(build_res_block(ngf * 8, 'reflect')):add(build_res_block(ngf * 8, 'reflect'))
+    netG:add(build_res_block(ngf * 8, 'reflect')):add(build_res_block(ngf * 8, 'reflect')):add(build_res_block(ngf * 8, 'reflect')):add(build_res_block(ngf * 8, 'reflect'))
+    netG:add(build_res_block(ngf * 8, 'reflect')):add(build_res_block(ngf * 8, 'reflect')):add(build_res_block(ngf * 8, 'reflect')):add(build_res_block(ngf * 8, 'reflect'))
+    netG:add(build_res_block(ngf * 8, 'reflect')):add(build_res_block(ngf * 8, 'reflect')):add(build_res_block(ngf * 8, 'reflect')):add(build_res_block(ngf * 8, 'reflect'))
 
     decoder = nn.Sequential()
     --64*512*4*4
-    --decoder:add(SpatialFullConvolution(512, 256, 4, 4, 2, 2, 1, 1))
-    decoder:add(nn.UpSampling(2, 'nearest'))
-    decoder:add(SpatialConvolution(512, 256, 3, 3, 1, 1, 1, 1))
+    decoder:add(SpatialFullConvolution(512, 256, 4, 4, 2, 2, 1, 1))
+    --decoder:add(nn.UpSampling(2, 'nearest'))
+    --decoder:add(SpatialConvolution(512, 256, 3, 3, 1, 1, 1, 1))
     decoder:add(SpatialBatchNormalization(256)):add(nn.ReLU(true))
     --64*256*8*8
-    --decoder:add(SpatialFullConvolution(256, 128, 4, 4, 2, 2, 1, 1))
-    decoder:add(nn.UpSampling(2, 'nearest'))
-    decoder:add(SpatialConvolution(256, 128, 3, 3, 1, 1, 1, 1))
+    decoder:add(SpatialFullConvolution(256, 128, 4, 4, 2, 2, 1, 1))
+    --decoder:add(nn.UpSampling(2, 'nearest'))
+    --decoder:add(SpatialConvolution(256, 128, 3, 3, 1, 1, 1, 1))
     decoder:add(SpatialBatchNormalization(128)):add(nn.ReLU(true))
     --64*128*16*16
-    --decoder:add(SpatialFullConvolution(128, 64, 4, 4, 2, 2, 1, 1))
-    decoder:add(nn.UpSampling(2, 'nearest'))
-    decoder:add(SpatialConvolution(128, 64, 3, 3, 1, 1, 1, 1))
+    decoder:add(SpatialFullConvolution(128, 64, 4, 4, 2, 2, 1, 1))
+    --decoder:add(nn.UpSampling(2, 'nearest'))
+    --decoder:add(SpatialConvolution(128, 64, 3, 3, 1, 1, 1, 1))
     decoder:add(SpatialBatchNormalization(64)):add(nn.ReLU(true))
     --64*64*32*32
-    --decoder:add(SpatialFullConvolution(64, 3, 4, 4, 2, 2, 1, 1))
-    decoder:add(nn.UpSampling(2, 'nearest'))
-    decoder:add(SpatialConvolution(64, 3, 3, 3, 1, 1, 1, 1))
+    decoder:add(SpatialFullConvolution(64, 3, 4, 4, 2, 2, 1, 1))
+    --decoder:add(nn.UpSampling(2, 'nearest'))
+    --decoder:add(SpatialConvolution(64, 3, 3, 3, 1, 1, 1, 1))
     decoder:add(nn.Tanh())
     --64*3*64*64
 
@@ -238,7 +231,7 @@ end
 local parametersG, gradParametersG = netG:getParameters()
 
 print(netG)
-torch.save('./checkpoints_cub_upsample/netG.t7', netG)
+torch.save('./checkpoints_cub_reverseCycle/netG.t7', netG)
 -- netG = torch.load('./models/netG.t7');
 -- print(netG)
 
