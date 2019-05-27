@@ -39,6 +39,8 @@ opt = {
     trainids = '/home/xhy/code/textEditImage/dataset_cub/cub_icml/trainvalids.txt',
     img_dir = '/home/xhy/code/textEditImage/dataset_cub/CUB_200_2011/images',
     checkpoint_dir = '/home/xhy/code/textEditImage/checkpoints',
+
+    netD_type = 'unet' -- unet
 }
 
 for k,v in pairs(opt) do opt[k] = tonumber(os.getenv(k)) or os.getenv(k) or opt[k] end
@@ -69,7 +71,11 @@ print("Dataset: " .. opt.dataset, " Size: ", data:size())
 
 local SpatialBatchNormalization = nn.SpatialBatchNormalization
 local SpatialConvolution = nn.SpatialConvolution
-local SpatialFullConvolution = nn.SpatialFullConvolution --去卷积或上采样的操作
+local SpatialFullConvolution = nn.SpatialFullConvolution
+local Join = nn.JoinTable
+local ReLU = nn.ReLU
+local Dropout = nn.Dropout
+local MaxPooling = nn.SpatialMaxPooling
 
 local criterion_img = nn.MSECriterion()
 local criterion = nn.BCECriterion()
@@ -132,9 +138,62 @@ local function build_res_block(dim, padding_type)
   return res_block
 end
 
-if opt.init_g == '' then
-    -- 输入图像+文本：图像64*3*64*64 文本64*1024
+local function ConvLayers(nIn, nOut, isSameSize, dropout)
+  local kW, kH, dW, dH, padW, padH = 4, 4, 2, 2, 1, 1
+  if isSameSize==1 then
+    kW, kH, dW, dH, padW, padH = 3, 3, 1, 1, 1, 1 -- parameters for 'same' conv layers
+  end
 
+	local net = nn.Sequential()
+	net:add(SpatialConvolution(nIn, nOut, kW, kH, dW, dH, padW, padH))
+	net:add(SpatialBatchNormalization(nOut))
+	net:add(ReLU(true))
+	if dropout then net:add(Dropout(dropout)) end
+
+	return net
+end
+
+
+if opt.init_g == '' and opt.netD_type == 'unet' then
+    -- 输入图像+文本：图像64*3*64*64 文本64*1024
+    local D1 = ConvLayers(3,64,0)()
+    local D2 = ConvLayers(64,128,0)(D1)
+    local D3 = ConvLayers(128,256,0)(D2)
+    local D4 = ConvLayers(256,512,0)(D3)
+
+    local encoder_txt = nn.Linear(opt.txtSize, opt.nt)()
+    local encoder_txt_bn = SpatialBatchNormalization(opt.nt)(nn.View(-1,opt.nt,1,1)(encoder_txt))
+    local encoder_txt_relu = nn.LeakyReLU(0.2,true)(nn.View(-1, opt.nt)(encoder_txt_bn))
+    local encoder_txt_replicate = nn.Replicate(4,4)(nn.Replicate(4,3)(encoder_txt_relu))
+
+    local syn = ConvLayers(512+opt.nt, ngf * 8, 1)(Join(2)({D4, encoder_txt_replicate}))
+
+    local res1 = build_res_block(512, 'reflect')(syn)
+    local res2 = build_res_block(512, 'reflect')(res1)
+    local res3 = build_res_block(512, 'reflect')(res2)
+    local res4 = build_res_block(512, 'reflect')(res3)
+    local res5 = build_res_block(512, 'reflect')(res4)
+    local res6 = build_res_block(512, 'reflect')(res5)
+    local res7 = build_res_block(512, 'reflect')(res6)
+    local res8 = build_res_block(512, 'reflect')(res7)
+    local res9 = build_res_block(512, 'reflect')(res8)
+    local res10 = build_res_block(512, 'reflect')(res9)
+    local res11 = build_res_block(512, 'reflect')(res10)
+    local res12 = build_res_block(512, 'reflect')(res11)
+
+    local U4 = ConvLayers(1024, 512, 1)(Join(2)({res12, D4}))
+    local U3 = ConvLayers(512, 256, 1)(Join(2)({ReLU(true)(SpatialFullConvolution(512,256, 4, 4, 2, 2, 1, 1)(U4)), D3}))
+    local U2 = ConvLayers(256, 128, 1)(Join(2)({ReLU(true)(SpatialFullConvolution(256,128, 4, 4, 2, 2, 1, 1)(U3)), D2}))
+    local U1 = ConvLayers(128, 64, 1)(Join(2)({ReLU(true)(SpatialFullConvolution(128, 64, 4, 4, 2, 2, 1, 1)(U2)), D1}))
+
+    netG = nn.Sequential()
+    netG:add(nn.gModule({D1,encoder_txt}, {U1}))
+    netG:add(SpatialFullConvolution(64, 3, 4, 4, 2, 2, 1, 1))
+    netG:add(nn.Tanh())
+
+    netG:apply(weights_init)
+
+elseif opt.init_g == '' then
     netG = nn.Sequential()
 
     encoder = nn.Sequential()
@@ -231,73 +290,6 @@ end
 local parametersG, gradParametersG = netG:getParameters()
 
 print(netG)
-torch.save('./checkpoints_cub_reverseCycle/netG.t7', netG)
--- netG = torch.load('./models/netG.t7');
+torch.save('./checkpoints_cub_reverseCycle_unet/netG.t7', netG)
+-- netG = torch.load('./models/netG.t7')
 -- print(netG)
-
---[[
-local preNetG = function(x)
-    netG:apply(function(m) if torch.type(m):find('Convolution') then m.bias:zero() end end)
-    gradParametersG:zero()
-
-    data_tm:reset(); data_tm:resume()
-    real_img, real_txt, wrong_img, _ = data:getBatch()
-    data_tm:stop()
-
-    input_img_guide:copy(real_img)
-    input_txt_guide:copy(real_txt)
-    --print(input_img_guide:size()) --64*3*64*64
-    --print(input_txt_guide:size()) --64*1024
-    local fake = netG:forward(input_img_guide)
-    outputImage:copy(fake)
-
-    errG = criterion_img:forward(input_img_guide, outputImage)
-    local gradient = criterion_img:backward(input_img_guide, outputImage)
-    netG:backward(input_img_guide, gradient)
-    --netG:updateParameters(opt.lr)
-    return errG, gradParametersG
-end
-
--- train
-for epoch = 1, opt.niter do
-    epoch_tm:reset()
-
-    if epoch % opt.decay_every == 0 then
-        optimStateG.learningRate = optimStateG.learningRate * opt.lr_decay
-        --optimStateD.learningRate = optimStateD.learningRate * opt.lr_decay
-    end
-
-    for i = 1, math.min(data:size(), opt.ntrain), opt.batchSize do
-        tm:reset()
-
-        -- (2) Update G network: maximize log(D(G(z)))
-        optim.adam(preNetG, parametersG, optimStateG)
-        -- logging
-        if ((i-1) / opt.batchSize) % opt.print_every == 0 then
-            print(('[%d][%d/%d] T:%.3f  DT:%.3f lr: %.4g '
-                .. '  Err_G: %.4f'):format(
-                epoch,
-                ((i-1) / opt.batchSize),
-                math.floor(math.min(data:size(), opt.ntrain) / opt.batchSize),
-                tm:time().real,
-                data_tm:time().real,
-                optimStateG.learningRate,
-                errG and errG or -1))
-            local fake = netG.output
-            --print(fake:size()) -- 64*3*64*64
-            disp.image(fake:narrow(1,1,opt.batchSize), {win=opt.display_id, title=opt.name})
-            disp.image(real_img, {win=opt.display_id * 3, title=opt.name})
-        end
-    end
-
-    -- save checkpoints
-    if epoch % opt.save_every == 0 then
-      paths.mkdir(opt.checkpoint_dir)
-      torch.save(opt.checkpoint_dir .. '/' .. opt.name .. '_' .. epoch .. '_net_G.t7', netG)
-      --torch.save(opt.checkpoint_dir .. '/' .. opt.name .. '_' .. epoch .. '_net_D.t7', netD)
-      --torch.save(opt.checkpoint_dir .. '/' .. opt.name .. '_' .. epoch .. '_opt.t7', opt)
-      print(('End of epoch %d / %d \t Time Taken: %.3f'):format(
-          epoch, opt.niter, epoch_tm:time().real))
-      end
-end
---]]
