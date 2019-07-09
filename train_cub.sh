@@ -1,0 +1,21 @@
+. CONFIG
+
+init_d='/home/xhy/code/textEditImage/checkpoints_cub_reverseCycle/experiment_long_257_net_D.t7' \
+init_g='/home/xhy/code/textEditImage/checkpoints_cub_reverseCycle/experiment_long_257_net_G.t7' \
+init_d_2='/home/xhy/code/textEditImage/checkpoints_cub_reverseCycle_stage2/netD_stage2.t7' \
+init_g_2='/home/xhy/code/textEditImage/checkpoints_cub_reverseCycle_stage2/netG_stage2.t7' \
+checkpoint_dir='/home/xhy/code/textEditImage/checkpoints_cub_reverseCycle' \
+dataset='cub' \
+batchSize=128 \
+epoch_begin=258 \
+lambda1=10 \
+lambda2=10 \
+cycle_limit=3.1 \
+cycle_limit_stage2=3 \
+cls_weight=0.5 \
+stage1=1 \
+stage2=0 \
+lr=0.0001 \
+lr_stage2=0.00005304 \
+lr_decay=0.9 \
+th train.lua

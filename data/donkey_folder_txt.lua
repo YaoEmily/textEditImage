@@ -74,8 +74,11 @@ for line in io.lines(opt.trainids) do --opt.trainids = 150
 end
 
 --------------------------------------------------------------------------------------------
-local loadSize   = {3, opt.loadSize}
+local loadSize = {3, opt.loadSize}
 local sampleSize = {3, opt.fineSize}
+
+local loadSize_stage2 = {3, opt.loadSize_stage2}
+local sampleSize_stage2 = {3, opt.fineSize_stage2}
 
 
 
@@ -85,6 +88,12 @@ local sampleSize = {3, opt.fineSize}
 local function loadImage(path)
   local input = image.load(path, 3, 'float')
   input = image.scale(input, loadSize[2], loadSize[2]) --76*76
+  return input
+end
+
+local function loadImage_stage2(path)
+  local input = image.load(path, 3, 'float')
+  input = image.scale(input, loadSize_stage2[2], loadSize_stage2[2]) --140*140
   return input
 end
 
@@ -100,6 +109,13 @@ local trainHook = function(path)
   if opt.no_aug == 1 then
     return image.scale(input, sampleSize[2], sampleSize[2])
   end
+  if opt.train ~= 1 then
+    local out = image.scale(input, sampleSize[2], sampleSize[2])
+    -- do hflip with probability 0.5
+    if torch.uniform() > 0.5 then out = image.hflip(out); end
+    out:mul(2):add(-1) -- make it [0, 1] -> [-1, 1]
+    return out
+  end
 
   local iW = input:size(3) -- 76
   local iH = input:size(2) -- 76
@@ -113,33 +129,55 @@ local trainHook = function(path)
   assert(out:size(2) == oW)
   assert(out:size(3) == oH)
 
-  return out
-
-  --[[
   -- do hflip with probability 0.5
   if torch.uniform() > 0.5 then out = image.hflip(out); end
   out:mul(2):add(-1) -- make it [0, 1] -> [-1, 1]
 
   return out
-  --]]
 end
 
 
+-- function to load the image, jitter it appropriately (random crops etc.)
+local trainHook_stage2 = function(path)
+  --print(path)
+  collectgarbage()
+  local input = loadImage_stage2(path) -- 3*140*140
+  if opt.no_aug == 1 then
+    return image.scale(input, sampleSize_stage2[2], sampleSize_stage2[2])
+  end
 
+  local iW = input:size(3) -- 140
+  local iH = input:size(2) -- 140
+
+  -- do random crop
+  local oW = sampleSize_stage2[2] -- 128
+  local oH = sampleSize_stage2[2] -- 128
+  local h1 = math.ceil(torch.uniform(1e-2, iH-oH)) -- 0.01~12 random number
+  local w1 = math.ceil(torch.uniform(1e-2, iW-oW)) -- 0.01~12 random number
+  local out = image.crop(input, w1, h1, w1 + oW, h1 + oH) -- 3*128*128 cut image
+  assert(out:size(2) == oW)
+  assert(out:size(3) == oH)
+
+  -- do hflip with probability 0.5
+  if torch.uniform() > 0.5 then out = image.hflip(out); end
+  out:mul(2):add(-1) -- make it [0, 1] -> [-1, 1]
+
+  return out
+end
 
 
 function trainLoader:sample(quantity)
   -- quantity = 64
   if opt.replicate == 1 then
-
-    --return self:getTest(quantity)
-    return self:sample_repl(quantity)
+    if opt.train == 1 then
+      return self:sample_repl(quantity)
+    else
+      return self:getTest(quantity)
+    end
   else
     return self:sample_no_repl(quantity)
   end
 end
-
-
 
 
 function trainLoader:single_img()
@@ -213,15 +251,34 @@ end
 
 function trainLoader:getTest(quantity)
   local data_img = torch.Tensor(quantity, sampleSize[1], sampleSize[2], sampleSize[2])
-
-  testImages = "/home/xhy/code/textEditImage/dataset_cub/CUB_200_2011/test_img.txt"
-  tmp = 1
+  if opt.dataset == 'cub' then
+    testImages = "/home/xhy/code/textEditImage/dataset_cub/CUB_200_2011/test_img.txt"
+  elseif opt.dataset == 'flowers' then
+    testImages = "/home/xhy/code/textEditImage/dataset_flowers/102flowers/test_img.txt"
+  else
+    print("test images error")
+  end
+  local tmp = 1
   for line in io.lines(testImages) do
     for i = 1, 4 do
       local image = trainHook(string.sub(line, 1, string.len(line)-1))
       data_img[tmp]:copy(image)
       tmp = tmp + 1
     end
+  end
+
+  if opt.stage2 == 1 then
+    local data_img_128 = torch.Tensor(quantity, sampleSize_stage2[1], sampleSize_stage2[2], sampleSize_stage2[2])
+    local tmp = 1
+    for line in io.lines(testImages) do
+      for i = 1, 4 do
+        local image = trainHook_stage2(string.sub(line, 1, string.len(line)-1))
+        data_img_128[tmp]:copy(image)
+        tmp = tmp + 1
+      end
+    end
+    collectgarbage(); collectgarbage()
+    return data_img, data_img_128
   end
 
   collectgarbage(); collectgarbage()
@@ -257,6 +314,8 @@ function trainLoader:sample_repl(quantity)
 
   local data_img1 = torch.Tensor(quantity, sampleSize[1], sampleSize[2], sampleSize[2]) -- real
   local data_img2 = torch.Tensor(quantity, sampleSize[1], sampleSize[2], sampleSize[2]) -- wrong
+  local data_img1_128 = torch.Tensor(quantity, sampleSize_stage2[1], sampleSize_stage2[2], sampleSize_stage2[2]) -- real 128
+  local data_img2_128 = torch.Tensor(quantity, sampleSize_stage2[1], sampleSize_stage2[2], sampleSize_stage2[2]) -- wrong 128
   local data_txt1 = torch.zeros(quantity, opt.txtSize) -- real
   local data_txt2 = torch.zeros(quantity, opt.txtSize) -- wrong
   local data_txt1_70 = torch.zeros(quantity, opt.doc_length, #alphabet)
@@ -279,6 +338,8 @@ function trainLoader:sample_repl(quantity)
     local img1 = trainHook(img_file1)
     local img_file2 = opt.img_dir .. '/' .. info2.img
     local img2 = trainHook(img_file2)
+    local img1_128 = trainHook_stage2(img_file1)
+    local img2_128 = trainHook_stage2(img_file2)
     local ix_txt1 = torch.randperm(info1.txt:size(1))[1]
     local ix_txt2 = torch.randperm(info2.txt:size(1))[1]
 
@@ -292,6 +353,8 @@ function trainLoader:sample_repl(quantity)
     data_txt2[n]:copy(txt2)
     data_img1[n]:copy(img1)
     data_img2[n]:copy(img2)
+    data_img1_128[n]:copy(img1_128)
+    data_img2_128[n]:copy(img2_128)
 
     data_txt1_70[n]:copy(txt1_70)
     data_txt2_70[n]:copy(txt2_70)
@@ -299,8 +362,10 @@ function trainLoader:sample_repl(quantity)
 
   collectgarbage(); collectgarbage()
   --return data_img1, data_txt1, data_img2, data_txt2
-  return data_img1, data_txt1_70, data_img2, data_txt2_70
+  return data_img1, data_txt1_70, data_img2, data_txt2_70, data_img1_128, data_img2_128
 end
+
+
 
 function trainLoader:size()
   return size

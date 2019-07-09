@@ -78,7 +78,7 @@ end
 
 function data._getFromThreads2()
   --assert(opt.batchSize, 'opt.batchSize not found')
-  return trainLoader:sample(16)
+  return trainLoader:sample(24)
 end
 
 function data._pushResult(...)
@@ -97,7 +97,6 @@ function data:getImages()
   local res = result[1]
   result[1] = nil
   if torch.type(res) == 'table' then
-    --print("unpack(res).shape =", unpack(res).shape)
     return unpack(res)
   end
   return res

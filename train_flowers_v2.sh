@@ -1,0 +1,25 @@
+. CONFIG
+
+init_d_64='/home/xhy/code/textEditImage/checkpoints_flowers_reverseCycle_v2/experiment_long_5_net_D_64.t7' \
+init_d_128='/home/xhy/code/textEditImage/checkpoints_flowers_reverseCycle_v2/experiment_long_5_net_D_128.t7' \
+init_g='/home/xhy/code/textEditImage/checkpoints_flowers_reverseCycle_v2/experiment_long_5_net_G.t7' \
+dataset='flowers' \
+net_txt='/home/xhy/code/textEditImage/dataset_flowers/lm_sje_flowers_c10_hybrid_0.00070_1_10_trainvalids.txt_iter16400.t7' \
+data_root='/home/xhy/code/textEditImage/dataset_flowers/flowers_icml' \
+classnames='/home/xhy/code/textEditImage/dataset_flowers/flowers_icml/allclasses.txt' \
+trainids='/home/xhy/code/textEditImage/dataset_flowers/flowers_icml/trainvalids.txt' \
+img_dir='/home/xhy/code/textEditImage/dataset_flowers/102flowers' \
+checkpoint_dir='/home/xhy/code/textEditImage/checkpoints_flowers_reverseCycle_v2' \
+batchSize=20 \
+epoch_begin=6 \
+lambda1=10 \
+lambda2=10 \
+cycle_limit=8 \
+cycle_limit_stage2=2.5 \
+cls_weight=0.5 \
+stage1=1 \
+stage2=0 \
+lr=0.0002 \
+lr_stage2=0.0002 \
+lr_decay=0.9 \
+th train_v2.lua
